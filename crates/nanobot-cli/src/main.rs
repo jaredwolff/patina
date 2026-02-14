@@ -82,8 +82,15 @@ fn build_agent_loop(
 ) -> Result<AgentLoop<impl rig::completion::CompletionModel>> {
     let defaults = &config.agents.defaults;
 
-    // Create Ollama client (local-first)
-    let ollama_client: ollama::Client = ollama::Client::new(Nothing)
+    // Create Ollama client (local-first), with optional custom base URL from config
+    let mut builder = ollama::Client::builder().api_key(Nothing);
+    if let Some(ref ollama_cfg) = config.providers.ollama {
+        if let Some(ref base) = ollama_cfg.api_base {
+            builder = builder.base_url(base);
+        }
+    }
+    let ollama_client: ollama::Client = builder
+        .build()
         .map_err(|e| anyhow::anyhow!("Failed to create Ollama client: {e}"))?;
     let model = ollama_client.completion_model(&defaults.model);
 
