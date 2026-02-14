@@ -103,10 +103,162 @@ impl<M: CompletionModel> AgentLoop<M> {
         session.add_message_with_tools("assistant", &response, tools_used);
         self.sessions.save(session_key)?;
 
+        // Check if memory consolidation is needed
+        let needs_consolidation = {
+            let session = self.sessions.get_or_create(session_key);
+            session.messages.len() > self.memory_window
+        };
+        if needs_consolidation {
+            self.consolidate_memory(session_key, false).await;
+        }
+
         Ok(response)
     }
 
-    /// Run the LLM ↔ tool loop until the model produces a text response or max iterations.
+    /// Consolidate old messages into MEMORY.md/HISTORY.md via LLM summarization.
+    ///
+    /// When `archive_all` is true (e.g. on /new), consolidates all messages.
+    /// Otherwise, consolidates messages older than the keep window.
+    pub async fn consolidate_memory(&mut self, session_key: &str, archive_all: bool) {
+        // Extract the data we need from the session before borrowing self for LLM call
+        let (conversation, end) = {
+            let session = match self.sessions.sessions.get(session_key) {
+                Some(s) => s,
+                None => return,
+            };
+
+            let keep_count = if archive_all {
+                0
+            } else {
+                self.memory_window / 2
+            };
+
+            let total = session.messages.len();
+            if total <= keep_count {
+                return;
+            }
+
+            let end = total.saturating_sub(keep_count);
+            if end <= session.last_consolidated {
+                return;
+            }
+
+            let messages_to_process = &session.messages[session.last_consolidated..end];
+            if messages_to_process.is_empty() {
+                return;
+            }
+
+            let mut conversation = String::new();
+            for msg in messages_to_process {
+                let ts = msg.timestamp.as_deref().unwrap_or("unknown");
+                let role = msg.role.to_uppercase();
+                let tools_info = match &msg.tools_used {
+                    Some(tools) if !tools.is_empty() => {
+                        format!(" [tools: {}]", tools.join(", "))
+                    }
+                    _ => String::new(),
+                };
+                conversation.push_str(&format!("[{ts}] {role}{tools_info}: {}\n", msg.content));
+            }
+
+            (conversation, end)
+        };
+
+        let current_memory = self.context.memory().read_long_term().unwrap_or_default();
+
+        let prompt = format!(
+            r#"You are a memory consolidation agent. Process this conversation and return a JSON object with exactly two keys:
+
+1. "history_entry": A paragraph (2-5 sentences) summarizing the key events/decisions/topics. Start with a timestamp like [YYYY-MM-DD HH:MM]. Include enough detail to be useful when found by grep search later.
+
+2. "memory_update": The updated long-term memory content. Add any new facts: user location, preferences, personal info, habits, project context, technical decisions, tools/services used. If nothing new, return the existing content unchanged.
+
+## Current Long-term Memory
+{current_memory}
+
+## Conversation to Process
+{conversation}
+
+Respond with ONLY valid JSON, no markdown fences."#
+        );
+
+        // Call the LLM for consolidation
+        let request = CompletionRequest {
+            preamble: None,
+            chat_history: OneOrMany::one(Message::User {
+                content: OneOrMany::one(UserContent::Text(Text { text: prompt })),
+            }),
+            documents: Vec::new(),
+            tools: Vec::new(),
+            temperature: Some(0.3),
+            max_tokens: Some(2048),
+            tool_choice: None,
+            additional_params: None,
+        };
+
+        let response = match self.model.completion(request).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Memory consolidation LLM call failed: {e}");
+                return;
+            }
+        };
+
+        let response_text: String = response
+            .choice
+            .iter()
+            .filter_map(|c| match c {
+                AssistantContent::Text(t) => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // Strip markdown fences if present
+        let trimmed = response_text.trim();
+        let json_str = trimmed
+            .strip_prefix("```json")
+            .or_else(|| trimmed.strip_prefix("```"))
+            .unwrap_or(trimmed)
+            .strip_suffix("```")
+            .unwrap_or(trimmed)
+            .trim();
+
+        let parsed: serde_json::Value = match serde_json::from_str(json_str) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Memory consolidation: failed to parse JSON response: {e}");
+                return;
+            }
+        };
+
+        let memory = self.context.memory();
+
+        // Append history entry
+        if let Some(entry) = parsed.get("history_entry").and_then(|e| e.as_str()) {
+            if let Err(e) = memory.append_history(entry) {
+                warn!("Failed to append history: {e}");
+            } else {
+                info!("Memory consolidation: appended history entry");
+            }
+        }
+
+        // Update long-term memory
+        if let Some(update) = parsed.get("memory_update").and_then(|u| u.as_str()) {
+            if let Err(e) = memory.write_long_term(update) {
+                warn!("Failed to update memory: {e}");
+            } else {
+                info!("Memory consolidation: updated long-term memory");
+            }
+        }
+
+        // Update last_consolidated counter
+        if let Some(session) = self.sessions.sessions.get_mut(session_key) {
+            session.last_consolidated = end;
+            let _ = self.sessions.save(session_key);
+        }
+    }
+
+    /// Run the LLM <> tool loop until the model produces a text response or max iterations.
     async fn run_loop(
         &self,
         system_prompt: &str,

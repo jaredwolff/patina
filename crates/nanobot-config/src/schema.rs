@@ -78,6 +78,29 @@ pub struct ProviderConfig {
 pub struct ToolsConfig {
     pub restrict_to_workspace: bool,
     pub exec: ExecToolConfig,
+    pub web: WebToolsConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WebToolsConfig {
+    pub search: WebSearchConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WebSearchConfig {
+    pub api_key: String,
+    pub max_results: u32,
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            max_results: 5,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

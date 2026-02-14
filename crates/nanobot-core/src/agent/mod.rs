@@ -7,3 +7,4 @@ pub mod subagent;
 pub use context::ContextBuilder;
 pub use memory::MemoryStore;
 pub use r#loop::AgentLoop;
+pub use skills::SkillsLoader;

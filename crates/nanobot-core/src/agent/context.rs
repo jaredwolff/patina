@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use crate::agent::memory::MemoryStore;
+use crate::agent::skills::SkillsLoader;
 use crate::session::Message;
 
 /// Bootstrap files loaded into the system prompt.
@@ -12,17 +13,24 @@ const BOOTSTRAP_FILES: &[&str] = &["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"
 pub struct ContextBuilder {
     workspace: PathBuf,
     memory: MemoryStore,
+    skills: SkillsLoader,
 }
 
 impl ContextBuilder {
-    pub fn new(workspace: &Path) -> Self {
+    pub fn new(workspace: &Path, builtin_skills: Option<&Path>) -> Self {
         Self {
             workspace: workspace.to_path_buf(),
             memory: MemoryStore::new(workspace),
+            skills: SkillsLoader::new(workspace, builtin_skills),
         }
     }
 
-    /// Build the full system prompt from identity, bootstrap files, and memory.
+    /// Access the memory store for consolidation.
+    pub fn memory(&self) -> &MemoryStore {
+        &self.memory
+    }
+
+    /// Build the full system prompt from identity, bootstrap files, skills, and memory.
     pub fn build_system_prompt(&self) -> Result<String> {
         let mut parts = Vec::new();
 
@@ -39,6 +47,27 @@ impl ContextBuilder {
         let memory = self.memory.read_long_term().unwrap_or_default();
         if !memory.is_empty() {
             parts.push(format!("# Memory\n\n{memory}"));
+        }
+
+        // Always-loaded skills (full content)
+        let always_skills = self.skills.get_always_skills();
+        if !always_skills.is_empty() {
+            let always_content = self.skills.load_skills_for_context(&always_skills);
+            if !always_content.is_empty() {
+                parts.push(format!("# Active Skills\n\n{always_content}"));
+            }
+        }
+
+        // Skills summary (progressive loading — agent uses read_file to load full content)
+        let skills_summary = self.skills.build_skills_summary();
+        if !skills_summary.is_empty() {
+            parts.push(format!(
+                "# Skills\n\n\
+                 The following skills extend your capabilities. To use a skill, \
+                 read its SKILL.md file using the read_file tool.\n\
+                 Skills with available=\"false\" need dependencies installed first.\n\n\
+                 {skills_summary}"
+            ));
         }
 
         Ok(parts.join("\n\n---\n\n"))

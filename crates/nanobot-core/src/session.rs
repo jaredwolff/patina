@@ -90,7 +90,7 @@ impl Session {
 /// Compatible with Python nanobot's session format.
 pub struct SessionManager {
     sessions_dir: PathBuf,
-    cache: HashMap<String, Session>,
+    pub sessions: HashMap<String, Session>,
 }
 
 impl SessionManager {
@@ -98,7 +98,7 @@ impl SessionManager {
         std::fs::create_dir_all(&sessions_dir).ok();
         Self {
             sessions_dir,
-            cache: HashMap::new(),
+            sessions: HashMap::new(),
         }
     }
 
@@ -111,11 +111,11 @@ impl SessionManager {
 
     /// Get or create a session, loading from disk if it exists.
     pub fn get_or_create(&mut self, key: &str) -> &mut Session {
-        if !self.cache.contains_key(key) {
+        if !self.sessions.contains_key(key) {
             let session = self.load(key).unwrap_or_else(|| Session::new(key.into()));
-            self.cache.insert(key.into(), session);
+            self.sessions.insert(key.into(), session);
         }
-        self.cache.get_mut(key).unwrap()
+        self.sessions.get_mut(key).unwrap()
     }
 
     /// Load a session from its JSONL file.
@@ -188,9 +188,9 @@ impl SessionManager {
     }
 
     /// Save a session to its JSONL file.
-    pub fn save(&mut self, key: &str) -> Result<()> {
+    pub fn save(&self, key: &str) -> Result<()> {
         let session = self
-            .cache
+            .sessions
             .get(key)
             .ok_or_else(|| anyhow::anyhow!("session not in cache: {key}"))?;
 
@@ -221,7 +221,7 @@ impl SessionManager {
 
     /// Remove a session from the in-memory cache.
     pub fn invalidate(&mut self, key: &str) {
-        self.cache.remove(key);
+        self.sessions.remove(key);
     }
 
     /// List all sessions by reading metadata lines from JSONL files.
