@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -8,8 +9,9 @@ use nanobot_core::session::SessionManager;
 use nanobot_core::tools::filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
 use nanobot_core::tools::shell::ExecTool;
 use nanobot_core::tools::ToolRegistry;
+use rig::client::completion::CompletionModelHandle;
 use rig::client::{CompletionClient, Nothing};
-use rig::providers::ollama;
+use rig::providers::{ollama, openai};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
@@ -59,16 +61,13 @@ async fn main() -> Result<()> {
             let agent_loop = build_agent_loop(&config, &workspace)?;
 
             if let Some(msg) = message {
-                // Single message mode
                 run_single_message(agent_loop, &msg).await?;
             } else {
-                // Interactive REPL
                 run_interactive(agent_loop).await?;
             }
         }
         Commands::Serve => {
             tracing::info!("Starting gateway...");
-            // TODO: load config, start channels + agent loop
             eprintln!("Gateway mode not yet implemented. Use `nanobot agent` for CLI mode.");
         }
     }
@@ -76,23 +75,55 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn build_agent_loop(
-    config: &nanobot_config::Config,
-    workspace: &Path,
-) -> Result<AgentLoop<impl rig::completion::CompletionModel>> {
-    let defaults = &config.agents.defaults;
+/// Create a completion model from config, selecting provider based on what's configured.
+///
+/// Priority: openai (covers llama.cpp, vLLM, any OpenAI-compatible) → ollama → ollama default
+#[allow(deprecated)]
+fn create_model(config: &nanobot_config::Config) -> Result<CompletionModelHandle<'static>> {
+    let model_name = &config.agents.defaults.model;
 
-    // Create Ollama client (local-first), with optional custom base URL from config
+    // 1. If openai provider is configured with an apiBase, use it (OpenAI-compatible: llama.cpp, vLLM, etc.)
+    if let Some(ref openai_cfg) = config.providers.openai {
+        if openai_cfg.api_base.is_some() || openai_cfg.api_key.is_some() {
+            let api_key = openai_cfg.api_key.as_deref().unwrap_or("not-needed");
+            let mut builder = openai::CompletionsClient::builder().api_key(api_key);
+            if let Some(ref base) = openai_cfg.api_base {
+                builder = builder.base_url(base);
+            }
+            let client: openai::CompletionsClient = builder
+                .build()
+                .map_err(|e| anyhow::anyhow!("Failed to create OpenAI-compatible client: {e}"))?;
+            let model = client.completion_model(model_name);
+            tracing::info!(
+                "Using OpenAI-compatible provider (base: {})",
+                openai_cfg.api_base.as_deref().unwrap_or("default")
+            );
+            return Ok(CompletionModelHandle::new(Arc::new(model)));
+        }
+    }
+
+    // 2. Ollama (local-first default)
     let mut builder = ollama::Client::builder().api_key(Nothing);
     if let Some(ref ollama_cfg) = config.providers.ollama {
         if let Some(ref base) = ollama_cfg.api_base {
             builder = builder.base_url(base);
         }
     }
-    let ollama_client: ollama::Client = builder
+    let client: ollama::Client = builder
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to create Ollama client: {e}"))?;
-    let model = ollama_client.completion_model(&defaults.model);
+    let model = client.completion_model(model_name);
+    tracing::info!("Using Ollama provider");
+    Ok(CompletionModelHandle::new(Arc::new(model)))
+}
+
+#[allow(deprecated)]
+fn build_agent_loop(
+    config: &nanobot_config::Config,
+    workspace: &Path,
+) -> Result<AgentLoop<CompletionModelHandle<'static>>> {
+    let defaults = &config.agents.defaults;
+    let model = create_model(config)?;
 
     // Sessions directory
     let sessions_dir = dirs::home_dir()
@@ -133,8 +164,9 @@ fn build_agent_loop(
     })
 }
 
+#[allow(deprecated)]
 async fn run_single_message(
-    mut agent_loop: AgentLoop<impl rig::completion::CompletionModel>,
+    mut agent_loop: AgentLoop<CompletionModelHandle<'static>>,
     message: &str,
 ) -> Result<()> {
     let response = agent_loop.process_message("cli:direct", message).await?;
@@ -142,9 +174,8 @@ async fn run_single_message(
     Ok(())
 }
 
-async fn run_interactive(
-    mut agent_loop: AgentLoop<impl rig::completion::CompletionModel>,
-) -> Result<()> {
+#[allow(deprecated)]
+async fn run_interactive(mut agent_loop: AgentLoop<CompletionModelHandle<'static>>) -> Result<()> {
     // History file
     let history_path = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -206,12 +237,10 @@ async fn run_interactive(
                 }
             }
             Err(ReadlineError::Interrupted) => {
-                // Ctrl-C: cancel current input, continue
                 println!("^C");
                 continue;
             }
             Err(ReadlineError::Eof) => {
-                // Ctrl-D: exit
                 println!("Goodbye!");
                 break;
             }
