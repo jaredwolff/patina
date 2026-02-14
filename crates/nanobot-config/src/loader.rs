@@ -1,8 +1,40 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use crate::Config;
+
+/// Resolve workspace path, expanding ~ to home directory.
+pub fn resolve_workspace(path: &str) -> PathBuf {
+    if path.starts_with("~/") || path == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(path.strip_prefix("~/").unwrap_or(""));
+        }
+    }
+    PathBuf::from(path)
+}
+
+/// Find the config file by searching standard locations.
+pub fn find_config_path() -> PathBuf {
+    // 1. Current directory
+    let local = Path::new("config.json");
+    if local.exists() {
+        return local.to_path_buf();
+    }
+
+    // 2. ~/.nanobot/config.json
+    if let Some(home) = dirs::home_dir() {
+        let home_config = home.join(".nanobot").join("config.json");
+        if home_config.exists() {
+            return home_config;
+        }
+    }
+
+    // Default: ~/.nanobot/config.json (will use defaults if missing)
+    dirs::home_dir()
+        .map(|h| h.join(".nanobot").join("config.json"))
+        .unwrap_or_else(|| PathBuf::from("config.json"))
+}
 
 /// Load configuration from a JSON file.
 pub fn load_config(path: &Path) -> Result<Config> {

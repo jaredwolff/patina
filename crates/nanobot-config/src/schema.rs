@@ -30,7 +30,7 @@ impl Default for AgentDefaults {
     fn default() -> Self {
         Self {
             workspace: "~/.nanobot/workspace".into(),
-            model: "llama3.2".into(),
+            model: "gpt-oss-20b-GGUF".into(),
             max_tokens: 8192,
             temperature: 0.7,
             max_tool_iterations: 20,

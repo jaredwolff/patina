@@ -12,3 +12,9 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+chrono = { workspace = true }
+rig-core = { workspace = true }
+schemars = { workspace = true }
+thiserror = { workspace = true }
+regex = { workspace = true }
+dirs = { workspace = true }

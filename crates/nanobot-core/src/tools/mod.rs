@@ -15,7 +15,7 @@ use async_trait::async_trait;
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    fn parameters(&self) -> serde_json::Value;
+    fn parameters_schema(&self) -> serde_json::Value;
     async fn execute(&self, params: serde_json::Value) -> Result<String>;
 }
 
@@ -41,6 +41,23 @@ impl ToolRegistry {
 
     pub fn list(&self) -> Vec<&dyn Tool> {
         self.tools.values().map(|t| t.as_ref()).collect()
+    }
+
+    /// Get tool definitions in OpenAI function-calling format.
+    pub fn get_definitions(&self) -> Vec<serde_json::Value> {
+        self.tools
+            .values()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name(),
+                        "description": t.description(),
+                        "parameters": t.parameters_schema(),
+                    }
+                })
+            })
+            .collect()
     }
 
     pub async fn execute(&self, name: &str, params: serde_json::Value) -> Result<String> {
