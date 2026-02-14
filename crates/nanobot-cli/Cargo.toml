@@ -1,0 +1,19 @@
+[package]
+name = "nanobot-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nanobot"
+path = "src/main.rs"
+
+[dependencies]
+nanobot-core = { workspace = true }
+nanobot-channels = { workspace = true }
+nanobot-config = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

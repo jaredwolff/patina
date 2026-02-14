@@ -1,0 +1,13 @@
+[package]
+name = "nanobot-channels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nanobot-core = { workspace = true }
+nanobot-config = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
