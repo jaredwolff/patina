@@ -154,6 +154,9 @@ impl<M: CompletionModel> AgentLoop<M> {
                         has_tool_calls = true;
                         tool_calls_to_execute.push(tc.clone());
                     }
+                    AssistantContent::Reasoning(r) => {
+                        info!("Model reasoning: {}", r.reasoning.join(" "));
+                    }
                     _ => {}
                 }
             }

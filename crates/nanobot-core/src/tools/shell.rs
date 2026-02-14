@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use regex::Regex;
 use tokio::process::Command;
 
 use super::Tool;
@@ -11,26 +12,35 @@ use super::Tool;
 pub struct ExecTool {
     timeout: Duration,
     working_dir: PathBuf,
-    deny_patterns: Vec<String>,
+    deny_patterns: Vec<Regex>,
     restrict_to_workspace: bool,
+    posix_path_re: Regex,
 }
 
 impl ExecTool {
     pub fn new(working_dir: PathBuf, timeout_secs: u64, restrict_to_workspace: bool) -> Self {
+        let deny_patterns: Vec<Regex> = [
+            r"\brm\s+-[rf]{1,2}\b",
+            r"\bdel\s+/[fq]\b",
+            r"\brmdir\s+/s\b",
+            r"\b(format|mkfs|diskpart)\b",
+            r"\bdd\s+if=",
+            r">\s*/dev/sd",
+            r"\b(shutdown|reboot|poweroff)\b",
+            r":\(\)\s*\{.*\};\s*:",
+        ]
+        .iter()
+        .filter_map(|p| Regex::new(p).ok())
+        .collect();
+
+        let posix_path_re = Regex::new(r#"(?:^|[\s|>])(/[^\s"'>]+)"#).unwrap();
+
         Self {
             timeout: Duration::from_secs(timeout_secs),
             working_dir,
-            deny_patterns: vec![
-                r"\brm\s+-[rf]{1,2}\b".into(),
-                r"\bdel\s+/[fq]\b".into(),
-                r"\brmdir\s+/s\b".into(),
-                r"\b(format|mkfs|diskpart)\b".into(),
-                r"\bdd\s+if=".into(),
-                r">\s*/dev/sd".into(),
-                r"\b(shutdown|reboot|poweroff)\b".into(),
-                r":\(\)\s*\{.*\};\s*:".into(),
-            ],
+            deny_patterns,
             restrict_to_workspace,
+            posix_path_re,
         }
     }
 
@@ -38,14 +48,11 @@ impl ExecTool {
         let lower = command.to_lowercase();
 
         // Check deny patterns
-        for pattern in &self.deny_patterns {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                if re.is_match(&lower) {
-                    return Some(
-                        "Error: Command blocked by safety guard (dangerous pattern detected)"
-                            .into(),
-                    );
-                }
+        for re in &self.deny_patterns {
+            if re.is_match(&lower) {
+                return Some(
+                    "Error: Command blocked by safety guard (dangerous pattern detected)".into(),
+                );
             }
         }
 
@@ -60,8 +67,7 @@ impl ExecTool {
             let cwd_resolved = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
 
             // Check for absolute paths outside workspace
-            let posix_re = regex::Regex::new(r#"(?:^|[\s|>])(/[^\s"'>]+)"#).unwrap();
-            for cap in posix_re.captures_iter(command) {
+            for cap in self.posix_path_re.captures_iter(command) {
                 if let Some(m) = cap.get(1) {
                     let p = Path::new(m.as_str());
                     if p.is_absolute() {

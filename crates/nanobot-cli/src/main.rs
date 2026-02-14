@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
 
 fn build_agent_loop(
     config: &nanobot_config::Config,
-    workspace: &PathBuf,
+    workspace: &Path,
 ) -> Result<AgentLoop<impl rig::completion::CompletionModel>> {
     let defaults = &config.agents.defaults;
 
@@ -99,8 +99,8 @@ fn build_agent_loop(
 
     // Tool registry
     let mut tools = ToolRegistry::new();
-    let allowed_dir = if config.tools.restrict_to_workspace {
-        Some(workspace.clone())
+    let allowed_dir: Option<PathBuf> = if config.tools.restrict_to_workspace {
+        Some(workspace.to_path_buf())
     } else {
         None
     };
@@ -109,7 +109,7 @@ fn build_agent_loop(
     tools.register(Box::new(EditFileTool::new(allowed_dir.clone())));
     tools.register(Box::new(ListDirTool::new(allowed_dir)));
     tools.register(Box::new(ExecTool::new(
-        workspace.clone(),
+        workspace.to_path_buf(),
         config.tools.exec.timeout_secs,
         config.tools.restrict_to_workspace,
     )));
