@@ -633,7 +633,7 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
     if config.channels.telegram.enabled {
         let groq_key = resolve_api_key(&config.providers.groq, "GROQ_API_KEY");
         let transcriber =
-            match patina_transcribe::create_transcriber(&config.transcription, groq_key) {
+            match patina_transcribe::create_transcriber(&config.transcription, groq_key).await {
                 Ok(t) => {
                     tracing::info!("Voice transcription initialized");
                     Some(Arc::from(t))

@@ -70,7 +70,7 @@ pub fn model_files_exist(model_path: &str) -> bool {
         && dir.join("vocab.txt").exists()
 }
 
-fn download_missing_model_files(model_path: &str, base_url: &str) -> Result<()> {
+async fn download_missing_model_files(model_path: &str, base_url: &str) -> Result<()> {
     let dir = std::path::Path::new(model_path);
     std::fs::create_dir_all(dir)?;
 
@@ -82,7 +82,7 @@ fn download_missing_model_files(model_path: &str, base_url: &str) -> Result<()> 
         "vocab.txt",
     ];
 
-    let client = reqwest::blocking::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()?;
 
@@ -93,15 +93,18 @@ fn download_missing_model_files(model_path: &str, base_url: &str) -> Result<()> 
         }
         let url = format!("{base}/{file}");
         info!("Downloading Parakeet model file: {url}");
-        let resp = client.get(&url).send()?.error_for_status()?;
-        let bytes = resp.bytes()?;
+        let resp = client.get(&url).send().await?.error_for_status()?;
+        let bytes = resp.bytes().await?;
         std::fs::write(&target, &bytes)?;
     }
 
     Ok(())
 }
 
-fn ensure_local_model_available(config: &TranscriptionConfig, model_path: &str) -> Result<bool> {
+async fn ensure_local_model_available(
+    config: &TranscriptionConfig,
+    model_path: &str,
+) -> Result<bool> {
     if model_files_exist(model_path) {
         return Ok(true);
     }
@@ -115,7 +118,7 @@ fn ensure_local_model_available(config: &TranscriptionConfig, model_path: &str) 
         .as_deref()
         .unwrap_or("https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main");
 
-    match download_missing_model_files(model_path, base) {
+    match download_missing_model_files(model_path, base).await {
         Ok(()) => Ok(model_files_exist(model_path)),
         Err(e) => Err(e),
     }
@@ -126,7 +129,7 @@ fn ensure_local_model_available(config: &TranscriptionConfig, model_path: &str) 
 /// - `mode: Local` — only local, error if model not found or ffmpeg missing
 /// - `mode: Groq` — only Groq, error if no API key
 /// - `mode: Auto` — try local first; if model not found, fall back to Groq only
-pub fn create_transcriber(
+pub async fn create_transcriber(
     config: &TranscriptionConfig,
     groq_api_key: Option<String>,
 ) -> Result<Box<dyn Transcriber>> {
@@ -135,7 +138,7 @@ pub fn create_transcriber(
 
     match config.mode {
         TranscriptionMode::Local => {
-            if !ensure_local_model_available(config, &model_path)? {
+            if !ensure_local_model_available(config, &model_path).await? {
                 anyhow::bail!(
                     "Transcription mode is 'local' but local model files are missing at {model_path}"
                 );
@@ -159,13 +162,14 @@ pub fn create_transcriber(
             let mut local_transcriber: Option<Box<dyn Transcriber>> = None;
             let mut fallback: Option<Box<dyn Transcriber>> = None;
 
-            let local_model_available = match ensure_local_model_available(config, &model_path) {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!("Failed to auto-download local model files: {e}");
-                    false
-                }
-            };
+            let local_model_available =
+                match ensure_local_model_available(config, &model_path).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!("Failed to auto-download local model files: {e}");
+                        false
+                    }
+                };
 
             // Try local
             if audio::ffmpeg_available() && local_model_available {
