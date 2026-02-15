@@ -24,3 +24,5 @@ rustyline = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 nanobot-transcribe = { workspace = true, features = ["parakeet"] }
+termimad = { workspace = true }
+nix = { workspace = true }

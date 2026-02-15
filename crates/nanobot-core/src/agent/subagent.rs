@@ -227,6 +227,8 @@ impl SubagentManager {
             temperature: self.config.agents.defaults.temperature as f64,
             max_tokens: self.config.agents.defaults.max_tokens as u64,
             memory_window: self.config.agents.defaults.memory_window,
+            model_name: self.config.agents.defaults.model.clone(),
+            model_overrides: crate::agent::r#loop::ModelOverrides::defaults(),
         })
     }
 

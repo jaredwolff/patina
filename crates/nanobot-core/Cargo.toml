@@ -23,3 +23,5 @@ which = { workspace = true }
 html-escape = { workspace = true }
 croner = { workspace = true }
 uuid = { workspace = true }
+readability = "0.3.0"
+url = "2"

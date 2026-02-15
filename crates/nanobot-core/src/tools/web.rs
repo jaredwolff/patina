@@ -281,13 +281,31 @@ impl Tool for WebFetchTool {
                 .to_lowercase()
                 .starts_with("<html")
         {
-            // HTML content — extract with readability-like approach
-            let text = if extract_mode == "text" {
-                self.strip_tags(&body)
-            } else {
-                self.to_markdown(&body)
-            };
-            (text, "readability")
+            // HTML content — extract with readability, fall back to regex
+            let parsed_url = url::Url::parse(&final_url)
+                .unwrap_or_else(|_| url::Url::parse("http://localhost").unwrap());
+            let readability_result =
+                readability::extractor::extract(&mut body.as_bytes(), &parsed_url);
+            match readability_result {
+                Ok(product) if !product.text.trim().is_empty() => {
+                    let text = if extract_mode == "text" {
+                        product.text
+                    } else {
+                        // Use extracted HTML content and convert to markdown
+                        self.to_markdown(&product.content)
+                    };
+                    (text, "readability")
+                }
+                _ => {
+                    // Fallback to regex-based extraction
+                    let text = if extract_mode == "text" {
+                        self.strip_tags(&body)
+                    } else {
+                        self.to_markdown(&body)
+                    };
+                    (text, "regex")
+                }
+            }
         } else {
             // Raw text
             (body, "raw")

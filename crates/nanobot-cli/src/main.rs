@@ -8,7 +8,7 @@ use nanobot_channels::manager::ChannelManager;
 use nanobot_channels::telegram::TelegramChannel;
 use nanobot_config::{find_config_path, load_config, resolve_workspace};
 use nanobot_core::agent::subagent::SubagentManager;
-use nanobot_core::agent::{AgentLoop, ContextBuilder};
+use nanobot_core::agent::{AgentLoop, ContextBuilder, ModelOverrides};
 use nanobot_core::bus::{MessageBus, OutboundMessage};
 use nanobot_core::cron::CronService;
 use nanobot_core::session::SessionManager;
@@ -25,6 +25,34 @@ use rig::providers::{anthropic, deepseek, gemini, groq, ollama, openai, openrout
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use tokio::sync::Mutex;
+
+/// Render markdown text to the terminal using termimad.
+fn render_markdown(text: &str) {
+    let skin = termimad::MadSkin::default();
+    skin.print_text(text);
+}
+
+/// Save terminal attributes for later restoration.
+#[cfg(unix)]
+fn save_terminal_state() -> Option<nix::sys::termios::Termios> {
+    nix::sys::termios::tcgetattr(std::io::stdin()).ok()
+}
+
+/// Restore previously saved terminal attributes.
+#[cfg(unix)]
+fn restore_terminal_state(saved: &nix::sys::termios::Termios) {
+    let _ = nix::sys::termios::tcsetattr(
+        std::io::stdin(),
+        nix::sys::termios::SetArg::TCSADRAIN,
+        saved,
+    );
+}
+
+/// Flush any pending input from the terminal.
+#[cfg(unix)]
+fn flush_pending_input() {
+    let _ = nix::sys::termios::tcflush(std::io::stdin(), nix::sys::termios::FlushArg::TCIFLUSH);
+}
 
 #[derive(Parser)]
 #[command(name = "nanobot", about = "Lightweight AI agent", version)]
@@ -470,6 +498,8 @@ fn build_agent_loop(
         temperature: defaults.temperature as f64,
         max_tokens: defaults.max_tokens as u64,
         memory_window: defaults.memory_window,
+        model_name: defaults.model.clone(),
+        model_overrides: ModelOverrides::defaults(),
     };
 
     Ok((agent_loop, context_tools, cron_service, bus))
@@ -706,7 +736,7 @@ async fn run_single_message(
     message: &str,
 ) -> Result<()> {
     let response = agent_loop.process_message(session_key, message).await?;
-    println!("{response}");
+    render_markdown(&response);
     Ok(())
 }
 
@@ -716,6 +746,10 @@ async fn run_interactive(
     context_tools: ContextTools,
     session_key: &str,
 ) -> Result<()> {
+    // Save terminal state for restoration on exit
+    #[cfg(unix)]
+    let saved_term = save_terminal_state();
+
     // Set initial context from the session key
     let parts: Vec<&str> = session_key.splitn(2, ':').collect();
     let (channel, chat_id) = if parts.len() == 2 {
@@ -737,7 +771,11 @@ async fn run_interactive(
     println!("nanobot interactive mode (type /help for commands, Ctrl-D to quit)");
     println!();
 
-    loop {
+    let result = loop {
+        // Flush any pending input before reading
+        #[cfg(unix)]
+        flush_pending_input();
+
         let readline = rl.readline("you> ");
         match readline {
             Ok(line) => {
@@ -750,7 +788,7 @@ async fn run_interactive(
 
                 // Handle exit commands
                 if matches!(input, "exit" | "quit" | "/exit" | "/quit" | ":q") {
-                    break;
+                    break Ok(());
                 }
 
                 // Handle slash commands
@@ -788,7 +826,7 @@ async fn run_interactive(
                 match agent_loop.process_message(session_key, input).await {
                     Ok(response) => {
                         println!();
-                        println!("{response}");
+                        render_markdown(&response);
                         println!();
                     }
                     Err(e) => {
@@ -803,17 +841,24 @@ async fn run_interactive(
             }
             Err(ReadlineError::Eof) => {
                 println!("Goodbye!");
-                break;
+                break Ok(());
             }
             Err(err) => {
                 eprintln!("Error: {err}");
-                break;
+                break Ok(());
             }
         }
-    }
+    };
 
     let _ = rl.save_history(&history_path);
-    Ok(())
+
+    // Restore terminal state on exit
+    #[cfg(unix)]
+    if let Some(ref saved) = saved_term {
+        restore_terminal_state(saved);
+    }
+
+    result
 }
 
 /// Initialize configuration and workspace with default templates.

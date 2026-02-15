@@ -10,6 +10,43 @@ use crate::agent::context::ContextBuilder;
 use crate::session::SessionManager;
 use crate::tools::ToolRegistry;
 
+/// Per-model parameter overrides keyed by substring pattern.
+/// E.g. ("kimi-k2.5", {temperature: 1.0}) forces temperature for Kimi K2.5.
+#[derive(Debug, Clone, Default)]
+pub struct ModelOverrides {
+    pub entries: Vec<(String, OverrideParams)>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct OverrideParams {
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u64>,
+}
+
+impl ModelOverrides {
+    /// Return the built-in model overrides (matching Python's registry).
+    pub fn defaults() -> Self {
+        Self {
+            entries: vec![(
+                "kimi-k2.5".to_string(),
+                OverrideParams {
+                    temperature: Some(1.0),
+                    max_tokens: None,
+                },
+            )],
+        }
+    }
+
+    /// Find overrides matching a model name (case-insensitive substring match).
+    pub fn find(&self, model_name: &str) -> Option<&OverrideParams> {
+        let lower = model_name.to_lowercase();
+        self.entries
+            .iter()
+            .find(|(pattern, _)| lower.contains(pattern))
+            .map(|(_, params)| params)
+    }
+}
+
 /// Core agent processing loop.
 ///
 /// Uses rig's CompletionModel directly for LLM calls but runs its own
@@ -23,6 +60,8 @@ pub struct AgentLoop<M: CompletionModel> {
     pub temperature: f64,
     pub max_tokens: u64,
     pub memory_window: usize,
+    pub model_name: String,
+    pub model_overrides: ModelOverrides,
 }
 
 impl<M: CompletionModel> AgentLoop<M> {
@@ -293,14 +332,25 @@ Respond with ONLY valid JSON, no markdown fences."#
             let mut all_messages = chat_history.clone();
             all_messages.push(current_prompt.clone());
 
+            // Apply model-specific overrides (e.g. kimi-k2.5 forces temperature=1.0)
+            let (effective_temp, effective_max_tokens) =
+                if let Some(overrides) = self.model_overrides.find(&self.model_name) {
+                    (
+                        overrides.temperature.unwrap_or(self.temperature),
+                        overrides.max_tokens.unwrap_or(self.max_tokens),
+                    )
+                } else {
+                    (self.temperature, self.max_tokens)
+                };
+
             let request = CompletionRequest {
                 preamble: Some(system_prompt.to_string()),
                 chat_history: OneOrMany::many(all_messages.clone())
                     .unwrap_or_else(|_| OneOrMany::one(current_prompt.clone())),
                 documents: Vec::new(),
                 tools: tool_defs.to_vec(),
-                temperature: Some(self.temperature),
-                max_tokens: Some(self.max_tokens),
+                temperature: Some(effective_temp),
+                max_tokens: Some(effective_max_tokens),
                 tool_choice: None,
                 additional_params: None,
             };
