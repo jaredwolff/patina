@@ -180,7 +180,7 @@ impl CronTool {
     }
 
     async fn handle_list(&self) -> Result<String> {
-        let service = self.service.lock().await;
+        let mut service = self.service.lock().await;
         let jobs = service.list_jobs(false);
 
         if jobs.is_empty() {

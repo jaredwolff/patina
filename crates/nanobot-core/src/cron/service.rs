@@ -20,6 +20,16 @@ pub struct CronService {
 }
 
 impl CronService {
+    /// Refresh in-memory jobs from disk.
+    ///
+    /// The timer loop currently updates persisted state independently, so API
+    /// operations should reload first to avoid acting on stale in-memory data.
+    fn refresh_from_disk(&mut self) {
+        if let Err(e) = self.load() {
+            warn!("Failed to refresh cron store from disk: {e}");
+        }
+    }
+
     pub fn new(store_path: PathBuf, inbound_tx: mpsc::Sender<InboundMessage>) -> Self {
         Self {
             store_path,
@@ -46,7 +56,8 @@ impl CronService {
     }
 
     /// List all jobs (optionally including disabled).
-    pub fn list_jobs(&self, include_disabled: bool) -> Vec<&CronJob> {
+    pub fn list_jobs(&mut self, include_disabled: bool) -> Vec<&CronJob> {
+        self.refresh_from_disk();
         self.jobs
             .iter()
             .filter(|j| include_disabled || j.enabled)
@@ -64,6 +75,7 @@ impl CronService {
         to: Option<String>,
         delete_after_run: bool,
     ) -> Result<CronJob> {
+        self.refresh_from_disk();
         let now_ms = Utc::now().timestamp_millis();
         let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
 
@@ -102,6 +114,7 @@ impl CronService {
 
     /// Remove a job by ID.
     pub fn remove_job(&mut self, job_id: &str) -> bool {
+        self.refresh_from_disk();
         let len_before = self.jobs.len();
         self.jobs.retain(|j| j.id != job_id);
         let removed = self.jobs.len() < len_before;
@@ -115,6 +128,7 @@ impl CronService {
 
     /// Enable or disable a job.
     pub fn enable_job(&mut self, job_id: &str, enabled: bool) -> Option<&CronJob> {
+        self.refresh_from_disk();
         if let Some(job) = self.jobs.iter_mut().find(|j| j.id == job_id) {
             job.enabled = enabled;
             job.updated_at_ms = Utc::now().timestamp_millis();

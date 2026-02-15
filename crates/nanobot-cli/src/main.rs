@@ -80,7 +80,17 @@ enum Commands {
     /// Start gateway with all enabled channels
     Serve,
     /// Initialize configuration and workspace
-    Onboard,
+    Onboard {
+        /// Skip interactive prompts and write defaults
+        #[arg(long)]
+        non_interactive: bool,
+    },
+    /// Interrupt an active session run
+    Interrupt {
+        /// Session key to interrupt (format: channel:chat_id)
+        #[arg(short, long, default_value = "cli:interactive")]
+        session: String,
+    },
     /// Show system status and configuration
     Status,
     /// Manage scheduled cron jobs
@@ -167,8 +177,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Onboard => {
-            return run_onboard(cli.config);
+        Commands::Onboard { non_interactive } => {
+            return run_onboard(cli.config, non_interactive);
+        }
+        Commands::Interrupt { session } => {
+            return run_interrupt(&session);
         }
         Commands::Status => {
             let config_path = cli.config.unwrap_or_else(find_config_path);
@@ -223,6 +236,27 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Create an interrupt flag for a session. Agent loops consume and clear this flag.
+fn run_interrupt(session: &str) -> Result<()> {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let interrupts_dir = home.join(".nanobot").join("interrupts");
+    std::fs::create_dir_all(&interrupts_dir)?;
+
+    let safe = session
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | ' ' => '_',
+            _ => c,
+        })
+        .collect::<String>();
+    let flag_path = interrupts_dir.join(format!("{safe}.flag"));
+    std::fs::write(&flag_path, chrono::Utc::now().to_rfc3339())?;
+
+    println!("Interrupt requested for session '{session}'.");
+    println!("Flag file: {}", flag_path.display());
+    Ok(())
+}
+
 /// Resolve an API key from config, falling back to an environment variable.
 fn resolve_api_key(
     provider_cfg: &Option<nanobot_config::ProviderConfig>,
@@ -233,6 +267,31 @@ fn resolve_api_key(
         .and_then(|c| c.api_key.clone())
         .filter(|k| !k.is_empty())
         .or_else(|| std::env::var(env_var).ok().filter(|k| !k.is_empty()))
+}
+
+/// Resolve builtin skills directory for progressive skill loading.
+///
+/// Resolution order:
+/// 1) `NANOBOT_BUILTIN_SKILLS` env var
+/// 2) Repository-relative path (dev builds)
+/// 3) Current working directory fallbacks
+fn resolve_builtin_skills_dir() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("NANOBOT_BUILTIN_SKILLS") {
+        let p = PathBuf::from(path);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+
+    let mut candidates =
+        vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../nanobot/skills")];
+
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("nanobot/skills"));
+        candidates.push(cwd.join("../nanobot/skills"));
+    }
+
+    candidates.into_iter().find(|p| p.is_dir())
 }
 
 /// Create a completion model from config, auto-detecting provider by model name.
@@ -424,8 +483,16 @@ fn build_agent_loop(
         .join("sessions");
     let sessions = SessionManager::new(sessions_dir);
 
-    // Context builder
-    let context = ContextBuilder::new(workspace, None);
+    // Context builder (workspace + builtin skills)
+    let builtin_skills = resolve_builtin_skills_dir();
+    if let Some(ref dir) = builtin_skills {
+        tracing::info!("Builtin skills directory: {}", dir.display());
+    } else {
+        tracing::warn!(
+            "Builtin skills directory not found; only workspace skills will be available"
+        );
+    }
+    let context = ContextBuilder::new(workspace, builtin_skills.as_deref());
 
     // Tool registry
     let mut tools = ToolRegistry::new();
@@ -541,6 +608,7 @@ async fn run_gateway(config: &nanobot_config::Config, workspace: &Path) -> Resul
     }
 
     // Start heartbeat if enabled
+    let mut heartbeat_service: Option<nanobot_core::heartbeat::HeartbeatService> = None;
     if config.heartbeat.enabled {
         let mut heartbeat = nanobot_core::heartbeat::HeartbeatService::new(
             workspace.to_path_buf(),
@@ -549,9 +617,7 @@ async fn run_gateway(config: &nanobot_config::Config, workspace: &Path) -> Resul
         );
         heartbeat.start();
         tracing::info!("Heartbeat service started");
-        // Leak the heartbeat so it keeps running (it's a background task for the
-        // lifetime of the process)
-        std::mem::forget(heartbeat);
+        heartbeat_service = Some(heartbeat);
     }
 
     // Set up channel manager
@@ -724,6 +790,13 @@ async fn run_gateway(config: &nanobot_config::Config, workspace: &Path) -> Resul
 
     // Clean shutdown
     channel_manager.stop_all().await?;
+    if let Some(ref mut heartbeat) = heartbeat_service {
+        heartbeat.stop();
+    }
+    {
+        let mut cron = cron_service.lock().await;
+        cron.stop();
+    }
     tracing::info!("Gateway stopped");
 
     Ok(())
@@ -797,6 +870,9 @@ async fn run_interactive(
                         println!("Commands:");
                         println!("  /new   - Start a new conversation (consolidates memory)");
                         println!("  /help  - Show this help");
+                        println!(
+                            "  interrupt (external): `nanobot interrupt --session {session_key}`"
+                        );
                         println!("  /quit  - Exit");
                         println!();
                         continue;
@@ -861,8 +937,37 @@ async fn run_interactive(
     result
 }
 
-/// Initialize configuration and workspace with default templates.
-fn run_onboard(config_arg: Option<PathBuf>) -> Result<()> {
+fn prompt_with_default(prompt: &str, default: &str) -> Result<String> {
+    use std::io::{self, Write};
+    print!("{prompt} [{default}]: ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        Ok(default.to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+fn prompt_yes_no(prompt: &str, default_yes: bool) -> Result<bool> {
+    use std::io::{self, Write};
+    let default = if default_yes { "Y/n" } else { "y/N" };
+    print!("{prompt} ({default}): ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let answer = input.trim();
+    if answer.is_empty() {
+        return Ok(default_yes);
+    }
+    let lower = answer.to_lowercase();
+    Ok(matches!(lower.as_str(), "y" | "yes"))
+}
+
+/// Initialize configuration and workspace with templates.
+fn run_onboard(config_arg: Option<PathBuf>, non_interactive: bool) -> Result<()> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let nanobot_dir = home.join(".nanobot");
     std::fs::create_dir_all(&nanobot_dir)?;
@@ -873,8 +978,30 @@ fn run_onboard(config_arg: Option<PathBuf>) -> Result<()> {
         println!("Config already exists: {}", config_path.display());
         println!("To reset, delete it and run `nanobot onboard` again.");
     } else {
-        let default_config = nanobot_config::Config::default();
-        let json = serde_json::to_string_pretty(&default_config)?;
+        let mut cfg = nanobot_config::Config::default();
+        if !non_interactive {
+            println!("Interactive setup");
+            cfg.agents.defaults.workspace =
+                prompt_with_default("Workspace path", &cfg.agents.defaults.workspace)?;
+            cfg.agents.defaults.model =
+                prompt_with_default("Default model", &cfg.agents.defaults.model)?;
+
+            let enable_tg = prompt_yes_no("Enable Telegram channel?", false)?;
+            cfg.channels.telegram.enabled = enable_tg;
+            if enable_tg {
+                cfg.channels.telegram.token =
+                    prompt_with_default("Telegram bot token", &cfg.channels.telegram.token)?;
+            }
+
+            let mode = prompt_with_default("Transcription mode (auto/local/groq)", "auto")?;
+            cfg.transcription.mode = match mode.to_lowercase().as_str() {
+                "local" => nanobot_config::TranscriptionMode::Local,
+                "groq" => nanobot_config::TranscriptionMode::Groq,
+                _ => nanobot_config::TranscriptionMode::Auto,
+            };
+        }
+
+        let json = serde_json::to_string_pretty(&cfg)?;
         std::fs::write(&config_path, json)?;
         println!("Created config: {}", config_path.display());
     }
@@ -941,14 +1068,12 @@ fn run_onboard(config_arg: Option<PathBuf>) -> Result<()> {
     );
     println!("  2. Run `nanobot agent` to start chatting");
     println!();
-    println!("For voice transcription (Telegram), download the Parakeet TDT model:");
-    println!("  mkdir -p ~/.nanobot/models/parakeet-tdt && cd $_");
-    println!("  wget https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/encoder-model.onnx");
-    println!("  wget https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/encoder-model.onnx.data");
-    println!("  wget https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/decoder_joint-model.onnx");
+    println!("Voice transcription notes:");
     println!(
-        "  wget https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/vocab.txt"
+        "  - Local model files auto-download on first use when transcription.autoDownload=true."
     );
+    println!("  - ffmpeg must be installed for local transcription audio conversion.");
+    println!("  - Manual model setup (optional): ~/.nanobot/models/parakeet-tdt");
     println!();
 
     Ok(())
@@ -1055,6 +1180,19 @@ fn run_status(config_path: &Path) -> Result<()> {
             .as_deref()
             .unwrap_or("cpu")
     );
+    println!(
+        "    Auto download: {}",
+        if config.transcription.auto_download {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    if let Some(ref url) = config.transcription.model_url {
+        if !url.is_empty() {
+            println!("    Model URL: {url}");
+        }
+    }
 
     Ok(())
 }

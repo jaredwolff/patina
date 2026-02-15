@@ -45,5 +45,11 @@
     "exec": {
       "timeoutSecs": 60
     }
+  },
+  "transcription": {
+    "mode": "auto",
+    "modelPath": "~/.nanobot/models/parakeet-tdt",
+    "executionProvider": "cpu",
+    "autoDownload": true
   }
 }

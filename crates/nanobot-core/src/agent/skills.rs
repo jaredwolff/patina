@@ -277,3 +277,65 @@ impl std::fmt::Display for SkillSource {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_skill(base: &Path, name: &str, content: &str) {
+        let dir = base.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), content).unwrap();
+    }
+
+    #[test]
+    fn workspace_overrides_builtin() {
+        let workspace = tempfile::tempdir().unwrap();
+        let builtin = tempfile::tempdir().unwrap();
+
+        let ws_skills = workspace.path().join("skills");
+        std::fs::create_dir_all(&ws_skills).unwrap();
+
+        write_skill(
+            &ws_skills,
+            "demo",
+            "---\nname: demo\ndescription: workspace\n---\nworkspace body",
+        );
+        write_skill(
+            builtin.path(),
+            "demo",
+            "---\nname: demo\ndescription: builtin\n---\nbuiltin body",
+        );
+
+        let loader = SkillsLoader::new(workspace.path(), Some(builtin.path()));
+        let skills = loader.list_skills();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "demo");
+        assert_eq!(skills[0].source, SkillSource::Workspace);
+
+        let loaded = loader.load_skill("demo").unwrap();
+        assert!(loaded.contains("workspace body"));
+    }
+
+    #[test]
+    fn marks_skill_unavailable_when_requirements_missing() {
+        let workspace = tempfile::tempdir().unwrap();
+        let ws_skills = workspace.path().join("skills");
+        std::fs::create_dir_all(&ws_skills).unwrap();
+
+        write_skill(
+            &ws_skills,
+            "needs-bin",
+            "---\nname: needs-bin\ndescription: test\nmetadata: {\"nanobot\":{\"requires\":{\"bins\":[\"__missing_bin_for_test__\"]}}}\n---\nbody",
+        );
+
+        let loader = SkillsLoader::new(workspace.path(), None);
+        let skills = loader.list_skills();
+        assert_eq!(skills.len(), 1);
+        assert!(!skills[0].available);
+        assert!(skills[0]
+            .missing_requirements
+            .iter()
+            .any(|r| r.contains("CLI: __missing_bin_for_test__")));
+    }
+}

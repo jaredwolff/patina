@@ -104,6 +104,29 @@ impl TelegramChannel {
     }
 }
 
+fn parse_chat_and_thread(
+    chat_id_str: &str,
+    metadata: &HashMap<String, serde_json::Value>,
+) -> Result<(i64, Option<ThreadId>)> {
+    let parts: Vec<&str> = chat_id_str.splitn(2, ':').collect();
+    let chat_id: i64 = parts[0]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid chat_id: {chat_id_str}"))?;
+    let thread_id: Option<ThreadId> = parts
+        .get(1)
+        .and_then(|s| s.parse::<i32>().ok())
+        .map(|id| ThreadId(teloxide::types::MessageId(id)));
+
+    let thread_id = thread_id.or_else(|| {
+        metadata
+            .get("message_thread_id")
+            .and_then(|v| v.as_i64())
+            .map(|v| ThreadId(teloxide::types::MessageId(v as i32)))
+    });
+
+    Ok((chat_id, thread_id))
+}
+
 #[async_trait]
 impl Channel for TelegramChannel {
     fn name(&self) -> &str {
@@ -216,22 +239,7 @@ impl Channel for TelegramChannel {
         self.stop_typing(&msg.chat_id).await;
 
         // Parse chat_id — format is "chat_id" or "chat_id:thread_id"
-        let parts: Vec<&str> = msg.chat_id.splitn(2, ':').collect();
-        let chat_id: i64 = parts[0]
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid chat_id: {}", msg.chat_id))?;
-        let thread_id: Option<ThreadId> = parts
-            .get(1)
-            .and_then(|s| s.parse::<i32>().ok())
-            .map(|id| ThreadId(teloxide::types::MessageId(id)));
-
-        // Also check metadata for thread_id as fallback
-        let thread_id = thread_id.or_else(|| {
-            msg.metadata
-                .get("message_thread_id")
-                .and_then(|v| v.as_i64())
-                .map(|v| ThreadId(teloxide::types::MessageId(v as i32)))
-        });
+        let (chat_id, thread_id) = parse_chat_and_thread(&msg.chat_id, &msg.metadata)?;
 
         // Try sending as HTML first
         let html_content = markdown_to_telegram_html(&msg.content);
@@ -549,6 +557,34 @@ fn is_sender_allowed(sender_id: &str, allow_from: &[String]) -> bool {
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allowlist_matches_full_and_composite_parts() {
+        assert!(is_sender_allowed("123|alice", &[]));
+        assert!(is_sender_allowed("123|alice", &[String::from("123")]));
+        assert!(is_sender_allowed("123|alice", &[String::from("alice")]));
+        assert!(is_sender_allowed("123|alice", &[String::from("123|alice")]));
+        assert!(!is_sender_allowed("123|alice", &[String::from("456")]));
+    }
+
+    #[test]
+    fn parse_chat_and_thread_uses_composite_and_metadata_fallback() {
+        let mut metadata = HashMap::new();
+        metadata.insert("message_thread_id".into(), serde_json::json!(42));
+
+        let (chat_id, thread_id) = parse_chat_and_thread("1001:7", &metadata).unwrap();
+        assert_eq!(chat_id, 1001);
+        assert_eq!(thread_id.map(|t| (t.0).0), Some(7));
+
+        let (chat_id, thread_id) = parse_chat_and_thread("1001", &metadata).unwrap();
+        assert_eq!(chat_id, 1001);
+        assert_eq!(thread_id.map(|t| (t.0).0), Some(42));
+    }
 }
 
 /// Download a media file from Telegram to ~/.nanobot/media/.

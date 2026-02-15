@@ -154,13 +154,24 @@ impl Default for HeartbeatConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TranscriptionConfig {
+    #[serde(alias = "engine")]
     pub mode: TranscriptionMode,
     /// Path to local model directory.
     /// Default: ~/.nanobot/models/parakeet-tdt
+    #[serde(alias = "model")]
     pub model_path: Option<String>,
     /// GPU execution provider: "cpu", "cuda", "migraphx", "tensorrt".
     /// Default: "cpu"
     pub execution_provider: Option<String>,
+    /// Auto-download missing local model files on first use.
+    #[serde(default = "default_transcription_auto_download")]
+    pub auto_download: bool,
+    /// Optional base URL for model files (defaults to HuggingFace ONNX repo).
+    pub model_url: Option<String>,
+}
+
+fn default_transcription_auto_download() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -170,4 +181,28 @@ pub enum TranscriptionMode {
     Groq,
     #[default]
     Auto,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transcription_alias_engine_and_model_are_supported() {
+        let cfg_json = serde_json::json!({
+            "transcription": {
+                "engine": "local",
+                "model": "~/models/parakeet",
+                "executionProvider": "cpu"
+            }
+        });
+
+        let cfg: Config = serde_json::from_value(cfg_json).unwrap();
+        assert_eq!(cfg.transcription.mode, TranscriptionMode::Local);
+        assert_eq!(
+            cfg.transcription.model_path.as_deref(),
+            Some("~/models/parakeet")
+        );
+        assert_eq!(cfg.transcription.execution_provider.as_deref(), Some("cpu"));
+    }
 }

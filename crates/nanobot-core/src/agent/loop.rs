@@ -65,12 +65,40 @@ pub struct AgentLoop<M: CompletionModel> {
 }
 
 impl<M: CompletionModel> AgentLoop<M> {
+    fn interrupt_flag_path(session_key: &str) -> std::path::PathBuf {
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let safe = session_key
+            .chars()
+            .map(|c| match c {
+                '/' | '\\' | ':' | ' ' => '_',
+                _ => c,
+            })
+            .collect::<String>();
+        home.join(".nanobot")
+            .join("interrupts")
+            .join(format!("{safe}.flag"))
+    }
+
+    fn consume_interrupt(session_key: &str) -> bool {
+        let flag = Self::interrupt_flag_path(session_key);
+        if flag.exists() {
+            let _ = std::fs::remove_file(flag);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Process a single user message and return the assistant's response.
     pub async fn process_message(
         &mut self,
         session_key: &str,
         user_message: &str,
     ) -> Result<String> {
+        if Self::consume_interrupt(session_key) {
+            return Ok("Interrupted before processing.".to_string());
+        }
+
         let session = self.sessions.get_or_create(session_key);
         let history = session.get_history(self.memory_window);
 
@@ -149,7 +177,13 @@ impl<M: CompletionModel> AgentLoop<M> {
 
         // Run the agent loop with tool calling
         let (response, tools_used, reasoning) = self
-            .run_loop(&system_prompt, chat_history, prompt, &tool_defs)
+            .run_loop(
+                session_key,
+                &system_prompt,
+                chat_history,
+                prompt,
+                &tool_defs,
+            )
             .await?;
 
         // Save to session
@@ -318,6 +352,7 @@ Respond with ONLY valid JSON, no markdown fences."#
     /// Returns (response_text, tools_used, reasoning_content).
     async fn run_loop(
         &self,
+        session_key: &str,
         system_prompt: &str,
         mut chat_history: Vec<Message>,
         prompt: Message,
@@ -328,6 +363,18 @@ Respond with ONLY valid JSON, no markdown fences."#
         let mut accumulated_reasoning = String::new();
 
         for iteration in 0..self.max_iterations {
+            if Self::consume_interrupt(session_key) {
+                return Ok((
+                    "Interrupted.".to_string(),
+                    tools_used,
+                    if accumulated_reasoning.is_empty() {
+                        None
+                    } else {
+                        Some(accumulated_reasoning)
+                    },
+                ));
+            }
+
             // Build the rig CompletionRequest
             let mut all_messages = chat_history.clone();
             all_messages.push(current_prompt.clone());
@@ -412,6 +459,18 @@ Respond with ONLY valid JSON, no markdown fences."#
             // Execute each tool call
             let mut tool_results: Vec<UserContent> = Vec::new();
             for tc in &tool_calls_to_execute {
+                if Self::consume_interrupt(session_key) {
+                    return Ok((
+                        "Interrupted.".to_string(),
+                        tools_used,
+                        if accumulated_reasoning.is_empty() {
+                            None
+                        } else {
+                            Some(accumulated_reasoning)
+                        },
+                    ));
+                }
+
                 let tool_name = &tc.function.name;
                 let tool_args = &tc.function.arguments;
                 tools_used.push(tool_name.clone());

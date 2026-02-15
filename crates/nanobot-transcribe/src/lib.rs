@@ -70,6 +70,57 @@ pub fn model_files_exist(model_path: &str) -> bool {
         && dir.join("vocab.txt").exists()
 }
 
+fn download_missing_model_files(model_path: &str, base_url: &str) -> Result<()> {
+    let dir = std::path::Path::new(model_path);
+    std::fs::create_dir_all(dir)?;
+
+    let base = base_url.trim_end_matches('/');
+    let files = [
+        "encoder-model.onnx",
+        "encoder-model.onnx.data",
+        "decoder_joint-model.onnx",
+        "vocab.txt",
+    ];
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
+
+    for file in files {
+        let target = dir.join(file);
+        if target.exists() {
+            continue;
+        }
+        let url = format!("{base}/{file}");
+        info!("Downloading Parakeet model file: {url}");
+        let resp = client.get(&url).send()?.error_for_status()?;
+        let bytes = resp.bytes()?;
+        std::fs::write(&target, &bytes)?;
+    }
+
+    Ok(())
+}
+
+fn ensure_local_model_available(config: &TranscriptionConfig, model_path: &str) -> Result<bool> {
+    if model_files_exist(model_path) {
+        return Ok(true);
+    }
+
+    if !config.auto_download {
+        return Ok(false);
+    }
+
+    let base = config
+        .model_url
+        .as_deref()
+        .unwrap_or("https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main");
+
+    match download_missing_model_files(model_path, base) {
+        Ok(()) => Ok(model_files_exist(model_path)),
+        Err(e) => Err(e),
+    }
+}
+
 /// Create a transcriber based on configuration.
 ///
 /// - `mode: Local` — only local, error if model not found or ffmpeg missing
@@ -80,17 +131,17 @@ pub fn create_transcriber(
     groq_api_key: Option<String>,
 ) -> Result<Box<dyn Transcriber>> {
     let model_path = resolve_model_path(config);
-    let ep = config
-        .execution_provider
-        .as_deref()
-        .unwrap_or("cpu");
+    let ep = config.execution_provider.as_deref().unwrap_or("cpu");
 
     match config.mode {
         TranscriptionMode::Local => {
-            if !audio::ffmpeg_available() {
+            if !ensure_local_model_available(config, &model_path)? {
                 anyhow::bail!(
-                    "Transcription mode is 'local' but ffmpeg is not installed"
+                    "Transcription mode is 'local' but local model files are missing at {model_path}"
                 );
+            }
+            if !audio::ffmpeg_available() {
+                anyhow::bail!("Transcription mode is 'local' but ffmpeg is not installed");
             }
             let local = try_create_local(&model_path, ep)?;
             Ok(Box::new(AutoTranscriber {
@@ -99,21 +150,25 @@ pub fn create_transcriber(
             }))
         }
         TranscriptionMode::Groq => {
-            let key = groq_api_key
-                .filter(|k| !k.is_empty())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Transcription mode is 'groq' but no Groq API key configured"
-                    )
-                })?;
+            let key = groq_api_key.filter(|k| !k.is_empty()).ok_or_else(|| {
+                anyhow::anyhow!("Transcription mode is 'groq' but no Groq API key configured")
+            })?;
             Ok(Box::new(groq::GroqTranscriber::new(key)))
         }
         TranscriptionMode::Auto => {
             let mut local_transcriber: Option<Box<dyn Transcriber>> = None;
             let mut fallback: Option<Box<dyn Transcriber>> = None;
 
+            let local_model_available = match ensure_local_model_available(config, &model_path) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to auto-download local model files: {e}");
+                    false
+                }
+            };
+
             // Try local
-            if audio::ffmpeg_available() && model_files_exist(&model_path) {
+            if audio::ffmpeg_available() && local_model_available {
                 match try_create_local(&model_path, ep) {
                     Ok(t) => {
                         info!("Local Parakeet transcription available");
@@ -127,7 +182,7 @@ pub fn create_transcriber(
                 if !audio::ffmpeg_available() {
                     info!("ffmpeg not found, local transcription unavailable");
                 }
-                if !model_files_exist(&model_path) {
+                if !local_model_available {
                     info!(
                         "Parakeet model not found at {model_path}, local transcription unavailable"
                     );
