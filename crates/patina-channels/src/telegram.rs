@@ -368,7 +368,11 @@ async fn handle_message(
                         if let Some(ref t) = transcriber {
                             match t.transcribe_file(&path).await {
                                 Ok(text) => {
-                                    info!("Transcribed voice: {}...", &text[..text.len().min(50)]);
+                                    if text.len() > 50 {
+                                        info!("Transcribed voice: {}...", &text[..50]);
+                                    } else {
+                                        info!("Transcribed voice: {text}");
+                                    }
                                     content_parts.push(format!("[transcription: {text}]"));
                                 }
                                 Err(e) => {
@@ -400,7 +404,11 @@ async fn handle_message(
                         if let Some(ref t) = transcriber {
                             match t.transcribe_file(&path).await {
                                 Ok(text) => {
-                                    info!("Transcribed audio: {}...", &text[..text.len().min(50)]);
+                                    if text.len() > 50 {
+                                        info!("Transcribed audio: {}...", &text[..50]);
+                                    } else {
+                                        info!("Transcribed audio: {text}");
+                                    }
                                     content_parts.push(format!("[transcription: {text}]"));
                                 }
                                 Err(e) => {
