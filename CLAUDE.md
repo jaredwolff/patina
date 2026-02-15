@@ -4,12 +4,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Table of Contents
 - [Project Overview](#project-overview)
-- [Python Reference Comparison](#python-reference-comparison)
-  - [How to Compare](#how-to-compare)
-  - [Module Mapping (Python → Rust)](#module-mapping-python--rust)
-  - [Rewrite Plan Status](#rewrite-plan-status-from-rust_rewrite_planmd)
-  - [What to Check When Making Changes](#what-to-check-when-making-changes)
-  - [Known Differences (Intentional)](#known-differences-intentional)
 - [Workspace Structure](#workspace-structure)
 - [Build and Test Commands](#build-and-test-commands)
 - [Configuration](#configuration)
@@ -28,7 +22,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [Implementation Status](#implementation-status)
 - [Future Improvements](#future-improvements)
 - [Design Principles](#design-principles)
-  - [Local-First Philosophy](#local-first-philosophy)
   - [Configuration and Session Formats](#configuration-and-session-formats)
   - [Skills Architecture](#skills-architecture-patina-coresrcagentskillsrs)
   - [Channel Architecture](#channel-architecture-patina-channels)
@@ -39,81 +32,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Patina-bot is a Rust rewrite of the Python nanobot framework (`../nanobot/`). It is a lightweight AI agent framework designed to run LLM agents with tool-calling capabilities across multiple chat channels. It supports interactive CLI mode and gateway mode for persistent messaging integrations.
-
-The Python version at `../nanobot/` is the **reference implementation**. The Rust version aims for feature parity, optimized for low memory usage, fast startup, and local-first inference.
-
-## Python Reference Comparison
-
-**Always compare with the Python implementation** when working on patina-bot. The Python codebase at `../nanobot/` is the source of truth for behavior and features.
-
-### How to Compare
-
-Before implementing or modifying any feature:
-1. **Read the Python version first** — check `../nanobot/` for the equivalent module
-2. **Match behavior exactly** — unless there's a documented Rust-specific improvement
-3. **Check the rewrite plan** — see `../RUST_REWRITE_PLAN.md` for architecture decisions and phase status
-4. **Verify parity** — after changes, confirm the Rust version handles the same edge cases as Python
-
-### Module Mapping (Python → Rust)
-
-| Python Module | Rust Crate/Module | Parity Status |
-|---|---|---|
-| `nanobot/agent/loop.py` | `patina-core/src/agent/loop.rs` | ✅ Complete |
-| `nanobot/agent/context.py` | `patina-core/src/agent/context.rs` | ✅ Complete |
-| `nanobot/agent/memory.py` | `patina-core/src/agent/memory.rs` | ✅ Complete |
-| `nanobot/agent/skills.py` | `patina-core/src/agent/skills.rs` | ✅ Complete |
-| `nanobot/agent/subagent.py` | `patina-core/src/agent/subagent.rs` | ✅ Complete |
-| `nanobot/agent/tools/` | `patina-core/src/tools/` | ✅ Complete (all 12 tools) |
-| `nanobot/config/` | `patina-config/` | ✅ Complete |
-| `nanobot/session/` | `patina-core/src/session.rs` | ✅ Complete |
-| `nanobot/bus/` | `patina-core/src/bus.rs` | ✅ Complete |
-| `nanobot/cron/` | `patina-core/src/cron/` | ✅ Complete |
-| `nanobot/heartbeat/` | `patina-core/src/heartbeat.rs` | ✅ Complete |
-| `nanobot/providers/` | rig-core (external) | ✅ Complete (19 vs 50+ providers) |
-| `nanobot/providers/transcription.py` | `patina-transcribe/` | ✅ Improved (local-first Parakeet + Groq fallback) |
-| `nanobot/channels/telegram.py` | `patina-channels/src/telegram.rs` | ✅ Complete |
-| `nanobot/channels/discord.py` | — | ❌ Not started |
-| `nanobot/channels/slack.py` | — | ❌ Not started |
-| `nanobot/channels/whatsapp.py` | — | ❌ Not started |
-| `nanobot/channels/qq.py` | — | ❌ Not started |
-| `nanobot/channels/dingtalk.py` | — | ❌ Not started |
-| `nanobot/channels/feishu.py` | — | ❌ Not started |
-| `nanobot/channels/mochat.py` | — | ❌ Not started |
-| `nanobot/channels/email.py` | — | ❌ Not started |
-| `nanobot/cli/` | `patina-cli/` | ✅ Complete |
-
-### Rewrite Plan Status (from `../RUST_REWRITE_PLAN.md`)
-
-| Phase | Description | Status |
-|---|---|---|
-| Phase 1 | Core Foundation (config, session, bus, LLM, tools, agent loop, CLI) | ✅ Complete |
-| Phase 2 | Full Agent Features (memory, skills, web tools, subagents, cron, heartbeat) | ✅ Complete |
-| Phase 3 | Channel Architecture + Telegram | ✅ Complete |
-| Phase 4 | Polish & Ship (onboarding, error handling, testing, packaging) | ⚠️ Nearly Complete (error audit + integration test remain) |
-| Future | Additional channels (Discord, Slack, Email, etc.) | ❌ Not started |
-| Future | Semantic memory with vector databases | ❌ Not started |
-
-### What to Check When Making Changes
-
-When modifying any Rust module, **proactively verify against Python**:
-
-- **Agent loop changes** → Read `../nanobot/agent/loop.py` — check iteration limits, error handling, tool call format, response assembly
-- **Tool changes** → Read the corresponding `../nanobot/agent/tools/*.py` — check parameter schemas match, error messages are similar, edge cases handled
-- **Session changes** → Read `../nanobot/session/manager.py` — verify JSONL format compatibility (files must be interchangeable)
-- **Config changes** → Read `../nanobot/config/schema.py` — field names, defaults, and validation must match
-- **Channel changes** → Read `../nanobot/channels/telegram.py` — check message formatting, media handling, command routing
-- **Bus/routing changes** → Read `../nanobot/bus/` — verify session key format (`{channel}:{chat_id}`)
-- **Memory changes** → Read `../nanobot/agent/memory.py` — check consolidation logic, MEMORY.md/HISTORY.md format
-- **Skills changes** → Read `../nanobot/agent/skills.py` — check YAML frontmatter parsing, progressive loading behavior
-
-### Known Differences (Intentional)
-
-These divergences from Python are by design:
-- **LLM providers**: Rust uses `rig-core` (19 providers) instead of `litellm` (50+). Covers all major providers. Note: rig-core does not support claude-cli (subprocess-based) - this would require a custom provider implementation. Future: Add claude-cli provider support for local Claude Code integration.
-- **Voice transcription**: Rust uses local-first Parakeet TDT with Groq as fallback. Python uses Groq only.
-- **Provider priority**: Rust prioritizes OpenAI-compatible (llama.cpp, vLLM) for local-first deployment, with Ollama as fallback. Python uses litellm's routing.
-- **Binary deployment**: Single static binary vs Python venv.
+Patina-bot is a lightweight AI agent framework designed to run LLM agents with tool-calling capabilities across multiple chat channels. It supports interactive CLI mode and gateway mode for persistent messaging integrations. Optimized for low memory usage, fast startup, and local-first inference.
 
 ## Workspace Structure
 
@@ -167,7 +86,7 @@ See `config.example.json` for full schema. Key sections:
 ### Agent Loop (patina-core/src/agent/loop.rs)
 
 The `AgentLoop` is the core orchestrator:
-1. Loads session history from JSONL files (compatible with Python nanobot)
+1. Loads session history from JSONL files
 2. Builds context using `ContextBuilder`
 3. Calls LLM with tool definitions via rig-core
 4. Executes tool calls via `ToolRegistry`
@@ -224,13 +143,13 @@ Session keys are derived as `"{channel}:{chat_id}"`.
 
 ### Provider Selection (patina-cli/src/main.rs)
 
-The `create_model()` function prioritizes providers in this order:
-1. **OpenAI-compatible with custom apiBase** (llama.cpp, vLLM, etc.) - checked first for local-first deployment
-2. **Auto-detect by model name prefix** (claude-* → Anthropic, gpt-* → OpenAI, etc.)
-3. **Explicitly configured cloud providers** (DeepSeek, Gemini, Groq, OpenRouter, etc.)
-4. **Ollama** - final fallback when no other provider is configured
+The `create_model()` function uses the explicitly configured `agents.defaults.provider` field. No auto-detection or fallback — if `provider` or `model` is not set, the agent errors with a clear message.
 
-Note: The codebase uses `rig-core` 0.30 for LLM abstraction. The `CompletionModelHandle` pattern is used to work around lifetime issues.
+Supported providers: `anthropic`, `openai`, `ollama`, `openrouter`, `deepseek`, `groq`, `gemini`.
+
+API keys are resolved from config first (`providers.<name>.apiKey`), then from environment variables (e.g. `ANTHROPIC_API_KEY`).
+
+The codebase uses `rig-core` 0.30 for LLM abstraction. The `CompletionModelHandle` pattern is used to work around lifetime issues.
 
 ### Context Builder (patina-core/src/agent/context.rs)
 
@@ -274,13 +193,11 @@ The `serve` command (implemented in `patina-cli/src/main.rs` via `run_gateway()`
 
 ## Implementation Status
 
-**Phases 1-3 complete. Phase 4 in progress.** See `../RUST_REWRITE_PLAN.md` for full plan.
-
-Core agent (all tools, memory, skills, cron, heartbeat, subagents) and Telegram channel are fully implemented. The main remaining gaps are additional channel integrations and Phase 4 polish items.
+Core agent (all tools, memory, skills, cron, heartbeat, subagents) and Telegram channel are fully implemented. The main remaining gaps are additional channel integrations and polish items.
 
 Implemented:
 - ✅ Config loading (JSON with camelCase, serde)
-- ✅ Session persistence (JSONL, Python-compatible)
+- ✅ Session persistence (JSONL)
 - ✅ Message bus (tokio mpsc/broadcast)
 - ✅ LLM integration via rig-core (Ollama default, OpenAI-compatible support)
 - ✅ Tool system (registry + all 12 tools: filesystem, shell, web, message, spawn, cron)
@@ -301,14 +218,13 @@ Implemented:
 - ✅ Binary packaging (release script + checksums)
 - ✅ Cross-compilation (CI builds Linux, macOS, Windows)
 
-Phase 4 remaining:
+Remaining polish:
 - ⚠️ Error handling audit — some `unwrap()` calls in production paths need review
 - ⚠️ Telegram integration test — only unit tests exist, no end-to-end test
 
-Future enhancements (see "Future Improvements" section below for details):
+Future enhancements:
 - ❌ Additional channels (Discord, Slack, Email)
 - ❌ Semantic memory with vector databases
-- ❌ Claude CLI provider integration
 - ❌ Security improvements from LocalGPT (see `LOCALGPT_COMPARISON.md`)
 - ❌ Monty code execution mode (see `MONTY_CODE_MODE_PLAN.md`)
 
@@ -343,17 +259,6 @@ Example: "Read all .rs files and count total lines"
 - Code mode: 1 LLM call generates Python loop, executes locally
 
 ## Design Principles
-
-### Local-First Philosophy
-
-Provider priority order (see `create_model()` in patina-cli/src/main.rs):
-1. **OpenAI-compatible with custom apiBase** (llama.cpp, vLLM, LocalAI) - prioritized for local deployment
-2. **Auto-detected cloud providers** (Anthropic, OpenAI, DeepSeek, Gemini, etc.) - when API keys configured
-3. **Ollama** (local, no API key needed) - final fallback
-
-By checking OpenAI-compatible servers (like llama.cpp) first, the system defaults to local-first deployment when configured. Ollama serves as a zero-config fallback for users who want to run models locally without setting up llama.cpp.
-
-The agent loop uses rig's `CompletionModel` trait — provider selection is config-driven, not hardcoded.
 
 ### Configuration and Session Formats
 
@@ -565,7 +470,7 @@ Commit changes when:
 ### Commit Message Guidelines
 
 - **Prefix**: Use conventional commits (feat, fix, docs, refactor, test, chore)
-- **Scope**: Use `(patina-bot)` to distinguish from Python nanobot commits
+- **Scope**: Use `(patina-bot)` as the scope
 - **Subject**: Imperative mood, lowercase, no period
 - **Body**: Bullet points explaining what changed and why
 - **Footer**: Include Claude Code attribution
