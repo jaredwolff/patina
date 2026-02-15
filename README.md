@@ -612,6 +612,8 @@ cargo watch -x check -x test -x run
 cargo doc --open
 ```
 
+Release and packaging notes live in `RELEASE.md`.
+
 ---
 
 ## 📜 License

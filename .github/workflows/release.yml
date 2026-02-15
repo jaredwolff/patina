@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            archive_ext: tar.gz
+            binary_path: target/release/nanobot
+          - os: macos-latest
+            archive_ext: tar.gz
+            binary_path: target/release/nanobot
+          - os: windows-latest
+            archive_ext: zip
+            binary_path: target/release/nanobot.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release -p nanobot-cli
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          PKG_DIR="nanobot-rs-${VERSION}-${RUNNER_OS,,}-${RUNNER_ARCH,,}"
+          mkdir -p "$PKG_DIR"
+          cp "${{ matrix.binary_path }}" "$PKG_DIR/nanobot"
+          cp README.md "$PKG_DIR/README.md"
+          cp config.example.json "$PKG_DIR/config.example.json"
+          tar -czf "${PKG_DIR}.tar.gz" "$PKG_DIR"
+          shasum -a 256 "${PKG_DIR}.tar.gz" > "${PKG_DIR}.sha256"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $Version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
+          $PkgDir = "nanobot-rs-$Version-$env:RUNNER_OS-$env:RUNNER_ARCH"
+          New-Item -ItemType Directory -Path $PkgDir | Out-Null
+          Copy-Item "${{ matrix.binary_path }}" "$PkgDir/nanobot.exe"
+          Copy-Item "README.md" "$PkgDir/README.md"
+          Copy-Item "config.example.json" "$PkgDir/config.example.json"
+          Compress-Archive -Path "$PkgDir/*" -DestinationPath "$PkgDir.zip" -Force
+          $Hash = (Get-FileHash "$PkgDir.zip" -Algorithm SHA256).Hash.ToLower()
+          "$Hash  $PkgDir.zip" | Out-File -FilePath "$PkgDir.sha256" -Encoding ascii
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanobot-rs-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            *.tar.gz
+            *.zip
+            *.sha256
