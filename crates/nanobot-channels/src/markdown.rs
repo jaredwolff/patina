@@ -9,24 +9,25 @@ use regex::Regex;
 /// Replace `_text_` with `<i>text</i>`, but only when the underscores are
 /// not surrounded by word characters (to avoid matching `some_var_name`).
 fn replace_italic(text: &str) -> String {
-    let bytes = text.as_bytes();
     let mut result = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
 
-    while i < bytes.len() {
-        if bytes[i] == b'_' {
+    while i < chars.len() {
+        if chars[i] == '_' {
             // Check that preceding char is not alphanumeric
-            let prev_is_word = i > 0 && (bytes[i - 1] as char).is_alphanumeric();
+            let prev_is_word = i > 0 && chars[i - 1].is_alphanumeric();
             if !prev_is_word {
                 // Find the closing underscore
-                if let Some(end) = text[i + 1..].find('_') {
+                let remainder: String = chars[i + 1..].iter().collect();
+                if let Some(end) = remainder.find('_') {
                     let end_pos = i + 1 + end;
                     // Check that the char after closing underscore is not alphanumeric
-                    let next_is_word =
-                        end_pos + 1 < bytes.len() && (bytes[end_pos + 1] as char).is_alphanumeric();
+                    let next_is_word = end_pos + 1 < chars.len() && chars[end_pos + 1].is_alphanumeric();
                     if !next_is_word && end > 0 {
                         result.push_str("<i>");
-                        result.push_str(&text[i + 1..end_pos]);
+                        let italic_text: String = chars[i + 1..end_pos].iter().collect();
+                        result.push_str(&italic_text);
                         result.push_str("</i>");
                         i = end_pos + 1;
                         continue;
@@ -34,7 +35,7 @@ fn replace_italic(text: &str) -> String {
                 }
             }
         }
-        result.push(bytes[i] as char);
+        result.push(chars[i]);
         i += 1;
     }
 
@@ -332,5 +333,29 @@ mod tests {
         assert!(output.contains("<i>italic</i>"));
         assert!(output.contains("<code>code</code>"));
         assert!(output.contains("<pre><code>"));
+    }
+
+    #[test]
+    fn test_utf8_smart_quotes() {
+        // Test that UTF-8 characters (smart quotes, em-dashes, etc.) are preserved
+        let input = "I'm a test—with smart quotes and em-dashes";
+        let output = markdown_to_telegram_html(input);
+        assert_eq!(output, "I'm a test—with smart quotes and em-dashes");
+    }
+
+    #[test]
+    fn test_utf8_with_italic() {
+        // Test UTF-8 characters combined with markdown formatting
+        let input = "I'm _really_ excited—**this** works!";
+        let output = markdown_to_telegram_html(input);
+        assert_eq!(output, "I'm <i>really</i> excited—<b>this</b> works!");
+    }
+
+    #[test]
+    fn test_utf8_emoji() {
+        // Test emoji preservation
+        let input = "Hello 👋 world 🌍";
+        let output = markdown_to_telegram_html(input);
+        assert_eq!(output, "Hello 👋 world 🌍");
     }
 }
