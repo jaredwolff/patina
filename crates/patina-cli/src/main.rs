@@ -607,6 +607,11 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
     // Start cron service
     {
         let mut cron = cron_service.lock().await;
+        cron.set_exec_context(
+            bus.outbound_tx.clone(),
+            workspace.to_path_buf(),
+            config.tools.exec.timeout_secs,
+        );
         if let Err(e) = cron.start().await {
             tracing::warn!("Failed to start cron service: {e}");
         }
@@ -1435,6 +1440,7 @@ async fn run_cron_command(action: CronCommands, config: &patina_config::Config) 
                 &name,
                 schedule,
                 &message,
+                "agent_turn",
                 deliver,
                 channel,
                 to,

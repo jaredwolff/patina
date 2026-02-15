@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use chrono::Utc;
 use croner::Cron;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::bus::InboundMessage;
+use crate::bus::{InboundMessage, OutboundMessage};
 use crate::cron::types::*;
 
 /// Service that manages scheduled cron jobs.
@@ -17,6 +17,9 @@ pub struct CronService {
     jobs: Vec<CronJob>,
     timer_handle: Option<JoinHandle<()>>,
     inbound_tx: mpsc::Sender<InboundMessage>,
+    outbound_tx: Option<broadcast::Sender<OutboundMessage>>,
+    workspace: Option<PathBuf>,
+    exec_timeout_secs: u64,
 }
 
 impl CronService {
@@ -36,7 +39,22 @@ impl CronService {
             jobs: Vec::new(),
             timer_handle: None,
             inbound_tx,
+            outbound_tx: None,
+            workspace: None,
+            exec_timeout_secs: 60,
         }
+    }
+
+    /// Set the outbound sender and workspace for direct exec jobs.
+    pub fn set_exec_context(
+        &mut self,
+        outbound_tx: broadcast::Sender<OutboundMessage>,
+        workspace: PathBuf,
+        exec_timeout_secs: u64,
+    ) {
+        self.outbound_tx = Some(outbound_tx);
+        self.workspace = Some(workspace);
+        self.exec_timeout_secs = exec_timeout_secs;
     }
 
     /// Load jobs from disk and start the timer.
@@ -71,6 +89,7 @@ impl CronService {
         name: &str,
         schedule: CronSchedule,
         message: &str,
+        kind: &str,
         deliver: bool,
         channel: Option<String>,
         to: Option<String>,
@@ -88,7 +107,7 @@ impl CronService {
             enabled: true,
             schedule,
             payload: CronPayload {
-                kind: "agent_turn".to_string(),
+                kind: kind.to_string(),
                 message: message.to_string(),
                 deliver,
                 channel,
@@ -160,6 +179,9 @@ impl CronService {
         jobs: &mut Vec<CronJob>,
         store_path: &Path,
         inbound_tx: &mpsc::Sender<InboundMessage>,
+        outbound_tx: Option<&broadcast::Sender<OutboundMessage>>,
+        workspace: Option<&Path>,
+        exec_timeout_secs: u64,
     ) {
         let now_ms = Utc::now().timestamp_millis();
         let mut jobs_to_delete = Vec::new();
@@ -178,46 +200,126 @@ impl CronService {
 
             info!("Executing cron job '{}' (id: {})", job.name, job.id);
 
-            // Send the job message through the bus
-            let channel = job
-                .payload
-                .channel
-                .clone()
-                .unwrap_or_else(|| "system".to_string());
-            let chat_id = job.payload.to.clone().unwrap_or_else(|| "cron".to_string());
+            // Direct exec: run command and send output to channel, no LLM
+            if job.payload.kind == "exec" {
+                let cwd = workspace
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."));
 
-            let msg = InboundMessage {
-                channel: channel.clone(),
-                sender_id: "cron".to_string(),
-                chat_id,
-                content: job.payload.message.clone(),
-                media: Vec::new(),
-                timestamp: crate::bus::default_timestamp(),
-                metadata: {
-                    let mut m = HashMap::new();
-                    m.insert(
-                        "cron_job_id".to_string(),
-                        serde_json::Value::String(job.id.clone()),
-                    );
-                    m.insert(
-                        "cron_job_name".to_string(),
-                        serde_json::Value::String(job.name.clone()),
-                    );
-                    m
-                },
-            };
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(exec_timeout_secs),
+                    tokio::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(&job.payload.message)
+                        .current_dir(&cwd)
+                        .output(),
+                )
+                .await;
 
-            if let Err(e) = inbound_tx.send(msg).await {
-                warn!("Failed to send cron job message: {e}");
-                job.state.last_status = Some("error".to_string());
-                job.state.last_error = Some(format!("Failed to send: {e}"));
+                let output = match result {
+                    Ok(Ok(out)) => {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        let mut text = stdout.to_string();
+                        if !stderr.trim().is_empty() {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(&format!("STDERR: {stderr}"));
+                        }
+                        if !out.status.success() {
+                            text.push_str(&format!(
+                                "\nExit code: {}",
+                                out.status.code().unwrap_or(-1)
+                            ));
+                        }
+                        if text.is_empty() {
+                            text = "(no output)".to_string();
+                        }
+                        job.state.last_status = Some("ok".to_string());
+                        job.state.last_error = None;
+                        text
+                    }
+                    Ok(Err(e)) => {
+                        let msg = format!("Exec error: {e}");
+                        job.state.last_status = Some("error".to_string());
+                        job.state.last_error = Some(msg.clone());
+                        msg
+                    }
+                    Err(_) => {
+                        let msg = format!("Exec timed out after {exec_timeout_secs}s");
+                        job.state.last_status = Some("error".to_string());
+                        job.state.last_error = Some(msg.clone());
+                        msg
+                    }
+                };
+
+                // Deliver output to channel if configured
+                if job.payload.deliver {
+                    if let (Some(tx), Some(channel), Some(to)) =
+                        (outbound_tx, &job.payload.channel, &job.payload.to)
+                    {
+                        if let Err(e) = tx.send(OutboundMessage {
+                            channel: channel.clone(),
+                            chat_id: to.clone(),
+                            content: output,
+                            reply_to: None,
+                            metadata: HashMap::new(),
+                        }) {
+                            warn!("Failed to deliver cron exec output: {e}");
+                        }
+                    } else {
+                        warn!(
+                            "Cron job '{}' has deliver=true but missing channel/to or outbound_tx",
+                            job.name
+                        );
+                    }
+                }
+
+                job.state.last_run_at_ms = Some(now_ms);
+                job.updated_at_ms = now_ms;
             } else {
-                job.state.last_status = Some("ok".to_string());
-                job.state.last_error = None;
-            }
+                // agent_turn: send through inbound bus for LLM processing
+                let channel = job
+                    .payload
+                    .channel
+                    .clone()
+                    .unwrap_or_else(|| "system".to_string());
+                let chat_id = job.payload.to.clone().unwrap_or_else(|| "cron".to_string());
 
-            job.state.last_run_at_ms = Some(now_ms);
-            job.updated_at_ms = now_ms;
+                let msg = InboundMessage {
+                    channel: channel.clone(),
+                    sender_id: "cron".to_string(),
+                    chat_id,
+                    content: job.payload.message.clone(),
+                    media: Vec::new(),
+                    timestamp: crate::bus::default_timestamp(),
+                    metadata: {
+                        let mut m = HashMap::new();
+                        m.insert(
+                            "cron_job_id".to_string(),
+                            serde_json::Value::String(job.id.clone()),
+                        );
+                        m.insert(
+                            "cron_job_name".to_string(),
+                            serde_json::Value::String(job.name.clone()),
+                        );
+                        m
+                    },
+                };
+
+                if let Err(e) = inbound_tx.send(msg).await {
+                    warn!("Failed to send cron job message: {e}");
+                    job.state.last_status = Some("error".to_string());
+                    job.state.last_error = Some(format!("Failed to send: {e}"));
+                } else {
+                    job.state.last_status = Some("ok".to_string());
+                    job.state.last_error = None;
+                }
+
+                job.state.last_run_at_ms = Some(now_ms);
+                job.updated_at_ms = now_ms;
+            }
 
             // Handle one-time jobs
             if job.schedule.kind == ScheduleKind::At {
@@ -276,6 +378,9 @@ impl CronService {
         let mut jobs = self.jobs.clone();
         let store_path = self.store_path.clone();
         let inbound_tx = self.inbound_tx.clone();
+        let outbound_tx = self.outbound_tx.clone();
+        let workspace = self.workspace.clone();
+        let exec_timeout_secs = self.exec_timeout_secs;
 
         self.timer_handle = Some(tokio::spawn(async move {
             loop {
@@ -297,7 +402,15 @@ impl CronService {
                     tokio::time::sleep(tokio::time::Duration::from_millis(sleep_ms)).await;
                 }
 
-                Self::execute_due_jobs(&mut jobs, &store_path, &inbound_tx).await;
+                Self::execute_due_jobs(
+                    &mut jobs,
+                    &store_path,
+                    &inbound_tx,
+                    outbound_tx.as_ref(),
+                    workspace.as_deref(),
+                    exec_timeout_secs,
+                )
+                .await;
 
                 // If no enabled jobs remain, exit the loop
                 let has_scheduled = jobs
@@ -503,7 +616,16 @@ mod tests {
             tz: None,
         };
         let job = svc
-            .add_job("test job", schedule, "do stuff", false, None, None, false)
+            .add_job(
+                "test job",
+                schedule,
+                "do stuff",
+                "agent_turn",
+                false,
+                None,
+                None,
+                false,
+            )
             .unwrap();
         assert_eq!(job.name, "test job");
         assert!(job.enabled);
@@ -529,9 +651,18 @@ mod tests {
             tz: None,
         };
         let job = svc
-            .add_job("j1", schedule.clone(), "m1", false, None, None, false)
+            .add_job(
+                "j1",
+                schedule.clone(),
+                "m1",
+                "agent_turn",
+                false,
+                None,
+                None,
+                false,
+            )
             .unwrap();
-        svc.add_job("j2", schedule, "m2", false, None, None, false)
+        svc.add_job("j2", schedule, "m2", "agent_turn", false, None, None, false)
             .unwrap();
         svc.enable_job(&job.id, false);
 
@@ -554,7 +685,16 @@ mod tests {
             tz: None,
         };
         let job = svc
-            .add_job("to_delete", schedule, "msg", false, None, None, false)
+            .add_job(
+                "to_delete",
+                schedule,
+                "msg",
+                "agent_turn",
+                false,
+                None,
+                None,
+                false,
+            )
             .unwrap();
         assert!(svc.remove_job(&job.id));
         assert!(svc.list_jobs(true).is_empty());
@@ -578,7 +718,16 @@ mod tests {
             tz: None,
         };
         let job = svc
-            .add_job("toggle", schedule, "msg", false, None, None, false)
+            .add_job(
+                "toggle",
+                schedule,
+                "msg",
+                "agent_turn",
+                false,
+                None,
+                None,
+                false,
+            )
             .unwrap();
 
         // Disable
@@ -610,7 +759,16 @@ mod tests {
         };
         let long_name = "a".repeat(50);
         let job = svc
-            .add_job(&long_name, schedule, "msg", false, None, None, false)
+            .add_job(
+                &long_name,
+                schedule,
+                "msg",
+                "agent_turn",
+                false,
+                None,
+                None,
+                false,
+            )
             .unwrap();
         assert_eq!(job.name.len(), 30);
     }
@@ -634,6 +792,7 @@ mod tests {
                 "persist",
                 schedule,
                 "hello",
+                "agent_turn",
                 true,
                 Some("tg".into()),
                 Some("123".into()),

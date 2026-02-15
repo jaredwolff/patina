@@ -42,7 +42,12 @@ impl Tool for CronTool {
          - 'every_seconds': Run every N seconds (e.g. every 3600 = every hour)\n\
          - 'cron_expr': Standard cron expression (e.g. '0 9 * * *' = daily at 9am)\n\
          - 'at': One-time execution at an ISO datetime (e.g. '2025-01-15T14:00:00Z')\n\
-         Use action 'add' to create, 'list' to view, 'remove' to delete."
+         Use action 'add' to create, 'list' to view, 'remove' to delete.\n\
+         \n\
+         Jobs support two payload kinds:\n\
+         - 'agent_turn' (default): sends the message through the AI agent for reasoning and tool use.\n\
+         - 'exec': runs the message as a shell command directly — much faster, no LLM needed. \
+         Use 'exec' for simple scheduled commands like API calls, scripts, or data fetches."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -77,6 +82,11 @@ impl Tool for CronTool {
                 "job_id": {
                     "type": "string",
                     "description": "Job ID (required for 'remove')"
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["agent_turn", "exec"],
+                    "description": "Payload kind: 'agent_turn' (default) sends message through the LLM agent loop. 'exec' runs the message as a shell command directly (no LLM), much faster for simple commands like API calls or scripts."
                 }
             },
             "required": ["action"]
@@ -160,8 +170,16 @@ impl CronTool {
             }
         };
 
+        let kind = params
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("agent_turn")
+            .to_string();
+
         let mut service = self.service.lock().await;
-        match service.add_job(name, schedule, message, true, channel, chat_id, false) {
+        match service.add_job(
+            name, schedule, message, &kind, true, channel, chat_id, false,
+        ) {
             Ok(job) => {
                 let next = job
                     .state

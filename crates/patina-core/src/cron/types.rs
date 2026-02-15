@@ -28,7 +28,7 @@ pub struct CronSchedule {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CronPayload {
-    /// "agent_turn" or "system_event"
+    /// "agent_turn" (LLM processing) or "exec" (direct shell command)
     #[serde(default = "default_payload_kind")]
     pub kind: String,
     /// The message/task to execute.
