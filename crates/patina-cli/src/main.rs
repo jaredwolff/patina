@@ -8,7 +8,7 @@ use patina_channels::manager::ChannelManager;
 use patina_channels::telegram::TelegramChannel;
 use patina_config::{find_config_path, load_config, resolve_workspace};
 use patina_core::agent::subagent::SubagentManager;
-use patina_core::agent::{AgentLoop, ContextBuilder, ModelOverrides};
+use patina_core::agent::{AgentLoop, ConsolidationResult, ContextBuilder, ModelOverrides};
 use patina_core::bus::{MessageBus, OutboundMessage};
 use patina_core::cron::CronService;
 use patina_core::session::SessionManager;
@@ -671,8 +671,16 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
 
     tracing::info!("Gateway running. Press Ctrl-C to stop.");
 
+    // Channel for background consolidation completions
+    let (consol_tx, mut consol_rx) = tokio::sync::mpsc::channel::<ConsolidationResult>(16);
+
     // Main inbound processing loop
     loop {
+        // Drain any completed background consolidations (non-blocking)
+        while let Ok(result) = consol_rx.try_recv() {
+            agent_loop.apply_consolidation(&result);
+        }
+
         tokio::select! {
             msg = bus.inbound_rx.recv() => {
                 let msg = match msg {
@@ -724,7 +732,15 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                                 );
                             }
                             if needs_consolidation {
-                                agent_loop.consolidate_memory(&session_key, false).await;
+                                if let Some(task) = agent_loop.prepare_consolidation(&session_key, false) {
+                                    let model = agent_loop.model.clone();
+                                    let tx = consol_tx.clone();
+                                    tokio::spawn(async move {
+                                        if let Some(result) = AgentLoop::run_consolidation(&model, &task).await {
+                                            let _ = tx.send(result).await;
+                                        }
+                                    });
+                                }
                             }
                         }
                         Some(Err(e)) => {
@@ -849,7 +865,15 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                             tracing::warn!("Failed to publish outbound response to bus: {e}");
                         }
                         if needs_consolidation {
-                            agent_loop.consolidate_memory(&session_key, false).await;
+                            if let Some(task) = agent_loop.prepare_consolidation(&session_key, false) {
+                                let model = agent_loop.model.clone();
+                                let tx = consol_tx.clone();
+                                tokio::spawn(async move {
+                                    if let Some(result) = AgentLoop::run_consolidation(&model, &task).await {
+                                        let _ = tx.send(result).await;
+                                    }
+                                });
+                            }
                         }
                     }
                     Some(Err(e)) => {
@@ -885,6 +909,13 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
         let mut cron = cron_service.lock().await;
         cron.stop();
     }
+
+    // Wait for any in-flight background consolidations to finish
+    drop(consol_tx);
+    while let Some(result) = consol_rx.recv().await {
+        agent_loop.apply_consolidation(&result);
+    }
+
     tracing::info!("Gateway stopped");
 
     Ok(())

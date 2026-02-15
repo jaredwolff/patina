@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 use rig::completion::{CompletionModel, CompletionRequest, Message, ToolDefinition};
 use rig::message::{
@@ -9,6 +11,23 @@ use tracing::{debug, info, warn};
 use crate::agent::context::ContextBuilder;
 use crate::session::SessionManager;
 use crate::tools::ToolRegistry;
+
+/// Data needed to run a memory consolidation LLM call.
+/// Captured as a snapshot so the call can run without borrowing AgentLoop.
+pub struct ConsolidationTask {
+    pub session_key: String,
+    pub end: usize,
+    pub conversation: String,
+    pub current_memory: String,
+    pub memory_path: PathBuf,
+    pub history_path: PathBuf,
+}
+
+/// Result of a successful consolidation, used to update session state.
+pub struct ConsolidationResult {
+    pub session_key: String,
+    pub end: usize,
+}
 
 /// Per-model parameter overrides keyed by substring pattern.
 /// E.g. ("kimi-k2.5", {temperature: 1.0}) forces temperature for Kimi K2.5.
@@ -239,57 +258,68 @@ impl<M: CompletionModel> AgentLoop<M> {
         Ok((response, needs_consolidation))
     }
 
-    /// Consolidate old messages into MEMORY.md/HISTORY.md via LLM summarization.
-    ///
-    /// When `archive_all` is true (e.g. on /new), consolidates all messages.
-    /// Otherwise, consolidates messages older than the keep window.
-    pub async fn consolidate_memory(&mut self, session_key: &str, archive_all: bool) {
-        // Extract the data we need from the session before borrowing self for LLM call
-        let (conversation, end) = {
-            let session = match self.sessions.sessions.get(session_key) {
-                Some(s) => s,
-                None => return,
-            };
+    /// Snapshot session data for consolidation without borrowing mutably.
+    /// Returns `None` if there's nothing to consolidate.
+    pub fn prepare_consolidation(
+        &self,
+        session_key: &str,
+        archive_all: bool,
+    ) -> Option<ConsolidationTask> {
+        let session = self.sessions.sessions.get(session_key)?;
 
-            let keep_count = if archive_all {
-                0
-            } else {
-                self.memory_window / 2
-            };
-
-            let total = session.messages.len();
-            if total <= keep_count {
-                return;
-            }
-
-            let end = total.saturating_sub(keep_count);
-            if end <= session.last_consolidated {
-                return;
-            }
-
-            let messages_to_process = &session.messages[session.last_consolidated..end];
-            if messages_to_process.is_empty() {
-                return;
-            }
-
-            let mut conversation = String::new();
-            for msg in messages_to_process {
-                let ts = msg.timestamp.as_deref().unwrap_or("unknown");
-                let role = msg.role.to_uppercase();
-                let tools_info = match &msg.tools_used {
-                    Some(tools) if !tools.is_empty() => {
-                        format!(" [tools: {}]", tools.join(", "))
-                    }
-                    _ => String::new(),
-                };
-                conversation.push_str(&format!("[{ts}] {role}{tools_info}: {}\n", msg.content));
-            }
-
-            (conversation, end)
+        let keep_count = if archive_all {
+            0
+        } else {
+            self.memory_window / 2
         };
 
-        let current_memory = self.context.memory().read_long_term().unwrap_or_default();
+        let total = session.messages.len();
+        if total <= keep_count {
+            return None;
+        }
 
+        let end = total.saturating_sub(keep_count);
+        if end <= session.last_consolidated {
+            return None;
+        }
+
+        let messages_to_process = &session.messages[session.last_consolidated..end];
+        if messages_to_process.is_empty() {
+            return None;
+        }
+
+        let mut conversation = String::new();
+        for msg in messages_to_process {
+            let ts = msg.timestamp.as_deref().unwrap_or("unknown");
+            let role = msg.role.to_uppercase();
+            let tools_info = match &msg.tools_used {
+                Some(tools) if !tools.is_empty() => {
+                    format!(" [tools: {}]", tools.join(", "))
+                }
+                _ => String::new(),
+            };
+            conversation.push_str(&format!("[{ts}] {role}{tools_info}: {}\n", msg.content));
+        }
+
+        let current_memory = self.context.memory().read_long_term().unwrap_or_default();
+        let memory_store = self.context.memory();
+
+        Some(ConsolidationTask {
+            session_key: session_key.to_string(),
+            end,
+            conversation,
+            current_memory,
+            memory_path: memory_store.memory_path().to_path_buf(),
+            history_path: memory_store.history_path().to_path_buf(),
+        })
+    }
+
+    /// Run the consolidation LLM call and write memory files.
+    /// This is a static method that doesn't need `self`.
+    pub async fn run_consolidation(
+        model: &M,
+        task: &ConsolidationTask,
+    ) -> Option<ConsolidationResult> {
         let prompt = format!(
             r#"You are a memory consolidation agent. Process this conversation and return a JSON object with exactly two keys:
 
@@ -298,15 +328,15 @@ impl<M: CompletionModel> AgentLoop<M> {
 2. "memory_update": The updated long-term memory content. Add any new facts: user location, preferences, personal info, habits, project context, technical decisions, tools/services used. If nothing new, return the existing content unchanged.
 
 ## Current Long-term Memory
-{current_memory}
+{}
 
 ## Conversation to Process
-{conversation}
+{}
 
-Respond with ONLY valid JSON, no markdown fences."#
+Respond with ONLY valid JSON, no markdown fences."#,
+            task.current_memory, task.conversation
         );
 
-        // Call the LLM for consolidation
         let request = CompletionRequest {
             preamble: None,
             chat_history: OneOrMany::one(Message::User {
@@ -320,11 +350,11 @@ Respond with ONLY valid JSON, no markdown fences."#
             additional_params: None,
         };
 
-        let response = match self.model.completion(request).await {
+        let response = match model.completion(request).await {
             Ok(r) => r,
             Err(e) => {
                 warn!("Memory consolidation LLM call failed: {e}");
-                return;
+                return None;
             }
         };
 
@@ -337,6 +367,8 @@ Respond with ONLY valid JSON, no markdown fences."#
             })
             .collect();
 
+        debug!("Memory consolidation LLM response: {}", response_text);
+
         // Strip markdown fences if present
         let trimmed = response_text.trim();
         let json_str = trimmed
@@ -347,40 +379,92 @@ Respond with ONLY valid JSON, no markdown fences."#
             .unwrap_or(trimmed)
             .trim();
 
+        debug!(
+            "Memory consolidation JSON after fence stripping: {}",
+            json_str
+        );
+
         let parsed: serde_json::Value = match serde_json::from_str(json_str) {
             Ok(v) => v,
             Err(e) => {
-                warn!("Memory consolidation: failed to parse JSON response: {e}");
-                return;
+                warn!(
+                    "Memory consolidation: failed to parse JSON response: {e}\n\
+                     Raw response (first 500 chars): {}",
+                    if response_text.len() > 500 {
+                        &response_text[..500]
+                    } else {
+                        &response_text
+                    }
+                );
+                return None;
             }
         };
 
-        let memory = self.context.memory();
-
-        // Append history entry
+        // Write memory files directly using paths from the task
         if let Some(entry) = parsed.get("history_entry").and_then(|e| e.as_str()) {
-            if let Err(e) = memory.append_history(entry) {
-                warn!("Failed to append history: {e}");
-            } else {
-                info!("Memory consolidation: appended history entry");
+            if let Some(parent) = task.history_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&task.history_path)
+            {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    if let Err(e) = writeln!(file, "\n{entry}") {
+                        warn!("Failed to append history: {e}");
+                    } else {
+                        info!("Memory consolidation: appended history entry");
+                    }
+                }
+                Err(e) => warn!("Failed to open history file: {e}"),
             }
         }
 
-        // Update long-term memory
         if let Some(update) = parsed.get("memory_update").and_then(|u| u.as_str()) {
-            if let Err(e) = memory.write_long_term(update) {
-                warn!("Failed to update memory: {e}");
-            } else {
-                info!("Memory consolidation: updated long-term memory");
+            if let Some(parent) = task.memory_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::write(&task.memory_path, update) {
+                Ok(()) => info!("Memory consolidation: updated long-term memory"),
+                Err(e) => warn!("Failed to update memory: {e}"),
             }
         }
 
-        // Update last_consolidated counter
-        if let Some(session) = self.sessions.sessions.get_mut(session_key) {
-            session.last_consolidated = end;
-            if let Err(e) = self.sessions.save(session_key) {
-                warn!("Failed to persist session '{session_key}' after consolidation: {e}");
+        Some(ConsolidationResult {
+            session_key: task.session_key.clone(),
+            end: task.end,
+        })
+    }
+
+    /// Apply a completed consolidation result to update session state.
+    pub fn apply_consolidation(&mut self, result: &ConsolidationResult) {
+        if let Some(session) = self.sessions.sessions.get_mut(&result.session_key) {
+            session.last_consolidated = result.end;
+            if let Err(e) = self.sessions.save(&result.session_key) {
+                warn!(
+                    "Failed to persist session '{}' after consolidation: {e}",
+                    result.session_key
+                );
             }
+        } else {
+            warn!(
+                "Session '{}' no longer exists after consolidation",
+                result.session_key
+            );
+        }
+    }
+
+    /// Consolidate old messages synchronously (convenience wrapper).
+    /// Used by `/new` command and CLI interactive mode where blocking is acceptable.
+    pub async fn consolidate_memory(&mut self, session_key: &str, archive_all: bool) {
+        let task = match self.prepare_consolidation(session_key, archive_all) {
+            Some(t) => t,
+            None => return,
+        };
+        if let Some(result) = Self::run_consolidation(&self.model, &task).await {
+            self.apply_consolidation(&result);
         }
     }
 

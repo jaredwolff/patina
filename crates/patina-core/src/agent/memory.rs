@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 /// Two-layer memory system: MEMORY.md (facts) + HISTORY.md (event log).
+#[derive(Clone)]
 pub struct MemoryStore {
     memory_path: PathBuf,
     history_path: PathBuf,
@@ -14,6 +15,14 @@ impl MemoryStore {
             memory_path: workspace.join("memory").join("MEMORY.md"),
             history_path: workspace.join("memory").join("HISTORY.md"),
         }
+    }
+
+    pub fn memory_path(&self) -> &std::path::Path {
+        &self.memory_path
+    }
+
+    pub fn history_path(&self) -> &std::path::Path {
+        &self.history_path
     }
 
     pub fn read_long_term(&self) -> Result<String> {
