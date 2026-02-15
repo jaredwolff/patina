@@ -1,12 +1,15 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use nanobot_channels::manager::ChannelManager;
+use nanobot_channels::telegram::TelegramChannel;
 use nanobot_config::{find_config_path, load_config, resolve_workspace};
 use nanobot_core::agent::subagent::SubagentManager;
 use nanobot_core::agent::{AgentLoop, ContextBuilder};
-use nanobot_core::bus::MessageBus;
+use nanobot_core::bus::{MessageBus, OutboundMessage};
 use nanobot_core::cron::CronService;
 use nanobot_core::session::SessionManager;
 use nanobot_core::tools::cron::CronTool;
@@ -85,7 +88,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Agent { message, session } => {
-            let (agent_loop, context_tools, _cron_service) = build_agent_loop(&config, &workspace)?;
+            let (agent_loop, context_tools, _cron_service, _bus) =
+                build_agent_loop(&config, &workspace)?;
 
             if let Some(msg) = message {
                 // Set context for the CLI session
@@ -102,33 +106,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Serve => {
-            tracing::info!("Starting gateway...");
-            // Start cron service in gateway mode
-            let (_agent_loop, _context_tools, cron_service) =
-                build_agent_loop(&config, &workspace)?;
-
-            {
-                let mut cron = cron_service.lock().await;
-                if let Err(e) = cron.start().await {
-                    tracing::warn!("Failed to start cron service: {e}");
-                }
-            }
-
-            // Start heartbeat if enabled
-            if config.heartbeat.enabled {
-                let bus = nanobot_core::bus::MessageBus::new(128);
-                let mut heartbeat = nanobot_core::heartbeat::HeartbeatService::new(
-                    workspace.clone(),
-                    bus.inbound_tx,
-                    Some(config.heartbeat.interval_secs),
-                );
-                heartbeat.start();
-                tracing::info!("Heartbeat service started");
-            }
-
-            eprintln!("Gateway mode not yet fully implemented. Channels pending Phase 3.");
-            eprintln!("Cron and heartbeat services are running. Press Ctrl-C to stop.");
-            tokio::signal::ctrl_c().await?;
+            run_gateway(&config, &workspace).await?;
         }
         _ => unreachable!(),
     }
@@ -311,6 +289,7 @@ fn build_agent_loop(
     AgentLoop<CompletionModelHandle<'static>>,
     ContextTools,
     Arc<Mutex<CronService>>,
+    MessageBus,
 )> {
     let defaults = &config.agents.defaults;
     let model = create_model(config)?;
@@ -401,7 +380,7 @@ fn build_agent_loop(
         memory_window: defaults.memory_window,
     };
 
-    Ok((agent_loop, context_tools, cron_service))
+    Ok((agent_loop, context_tools, cron_service, bus))
 }
 
 /// Wrapper to register an `Arc<T: Tool>` in the ToolRegistry (which expects `Box<dyn Tool>`).
@@ -421,6 +400,152 @@ impl<T: nanobot_core::tools::Tool + 'static> nanobot_core::tools::Tool for ArcTo
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<String> {
         self.0.execute(params).await
     }
+}
+
+/// Run the full gateway: channels + agent processing loop + cron + heartbeat.
+#[allow(deprecated)]
+async fn run_gateway(config: &nanobot_config::Config, workspace: &Path) -> Result<()> {
+    tracing::info!("Starting gateway...");
+
+    let (mut agent_loop, context_tools, cron_service, mut bus) =
+        build_agent_loop(config, workspace)?;
+
+    // Start cron service
+    {
+        let mut cron = cron_service.lock().await;
+        if let Err(e) = cron.start().await {
+            tracing::warn!("Failed to start cron service: {e}");
+        }
+    }
+
+    // Start heartbeat if enabled
+    if config.heartbeat.enabled {
+        let mut heartbeat = nanobot_core::heartbeat::HeartbeatService::new(
+            workspace.to_path_buf(),
+            bus.inbound_tx.clone(),
+            Some(config.heartbeat.interval_secs),
+        );
+        heartbeat.start();
+        tracing::info!("Heartbeat service started");
+        // Leak the heartbeat so it keeps running (it's a background task for the
+        // lifetime of the process)
+        std::mem::forget(heartbeat);
+    }
+
+    // Set up channel manager
+    let outbound_rx = bus.outbound_tx.subscribe();
+    let mut channel_manager = ChannelManager::new(outbound_rx);
+
+    // Register Telegram channel if enabled
+    if config.channels.telegram.enabled {
+        match TelegramChannel::new(config.channels.telegram.clone()) {
+            Ok(tg) => {
+                channel_manager.register(Arc::new(tg)).await;
+                tracing::info!("Telegram channel registered");
+            }
+            Err(e) => {
+                tracing::error!("Failed to create Telegram channel: {e}");
+            }
+        }
+    }
+
+    // Start all channels (spawns polling + outbound dispatcher)
+    let enabled = channel_manager.enabled_channels().await;
+    if enabled.is_empty() {
+        tracing::warn!("No channels enabled. Configure channels in config.json.");
+        tracing::info!("Gateway running with cron/heartbeat only. Press Ctrl-C to stop.");
+    } else {
+        tracing::info!("Starting channels: {}", enabled.join(", "));
+    }
+    channel_manager.start_all(bus.inbound_tx.clone()).await?;
+
+    tracing::info!("Gateway running. Press Ctrl-C to stop.");
+
+    // Main inbound processing loop
+    loop {
+        tokio::select! {
+            msg = bus.inbound_rx.recv() => {
+                let msg = match msg {
+                    Some(m) => m,
+                    None => {
+                        tracing::info!("Inbound channel closed");
+                        break;
+                    }
+                };
+
+                // Update tool context for this message's origin
+                context_tools
+                    .set_context(&msg.channel, &msg.chat_id)
+                    .await;
+
+                let session_key = msg.session_key();
+
+                // Handle slash commands
+                let content = msg.content.trim();
+                if content == "/new" {
+                    // Consolidate memory and start fresh
+                    let session = agent_loop.sessions.get_or_create(&session_key);
+                    let has_messages = !session.messages.is_empty();
+                    if has_messages {
+                        agent_loop.consolidate_memory(&session_key, true).await;
+                    }
+                    let session = agent_loop.sessions.get_or_create(&session_key);
+                    session.clear();
+                    let _ = agent_loop.sessions.save(&session_key);
+                    agent_loop.sessions.invalidate(&session_key);
+
+                    let _ = bus.outbound_tx.send(OutboundMessage {
+                        channel: msg.channel.clone(),
+                        chat_id: msg.chat_id.clone(),
+                        content: "New session started. Previous conversation has been saved to memory.".to_string(),
+                        metadata: msg.metadata.clone(),
+                    });
+                    continue;
+                }
+
+                if content == "/help" || content == "/start" {
+                    let _ = bus.outbound_tx.send(OutboundMessage {
+                        channel: msg.channel.clone(),
+                        chat_id: msg.chat_id.clone(),
+                        content: "Hi! I'm nanobot.\n\nSend me a message and I'll respond.\n\nCommands:\n/new - Start a new conversation\n/help - Show this help".to_string(),
+                        metadata: msg.metadata.clone(),
+                    });
+                    continue;
+                }
+
+                // Process through agent
+                match agent_loop.process_message(&session_key, content).await {
+                    Ok(response) => {
+                        let _ = bus.outbound_tx.send(OutboundMessage {
+                            channel: msg.channel.clone(),
+                            chat_id: msg.chat_id.clone(),
+                            content: response,
+                            metadata: msg.metadata.clone(),
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!("Error processing message: {e}");
+                        let _ = bus.outbound_tx.send(OutboundMessage {
+                            channel: msg.channel.clone(),
+                            chat_id: msg.chat_id.clone(),
+                            content: format!("Sorry, I encountered an error: {e}"),
+                            metadata: HashMap::new(),
+                        });
+                    }
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Shutting down...");
+                break;
+            }
+        }
+    }
+
+    // Clean shutdown
+    channel_manager.stop_all().await?;
+    tracing::info!("Gateway stopped");
+
+    Ok(())
 }
 
 #[allow(deprecated)]
