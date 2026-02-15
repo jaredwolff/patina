@@ -115,23 +115,13 @@ async fn tick(workspace: &Path, inbound_tx: &mpsc::Sender<InboundMessage>) -> an
 
 /// Check if HEARTBEAT.md contains only structural content (no actionable tasks).
 ///
-/// Skips: empty lines, lines starting with #, HTML comments, empty checkboxes.
+/// Skips: empty lines, lines starting with #, lines starting with <!--,
+/// and checkbox-only lines (- [ ], * [ ], - [x], * [x]).
 fn is_heartbeat_empty(content: &str) -> bool {
-    let mut in_comment = false;
+    const SKIP_PATTERNS: &[&str] = &["- [ ]", "* [ ]", "- [x]", "* [x]"];
 
     for line in content.lines() {
         let trimmed = line.trim();
-
-        // Track HTML comment blocks
-        if trimmed.contains("<!--") {
-            in_comment = true;
-        }
-        if in_comment {
-            if trimmed.contains("-->") {
-                in_comment = false;
-            }
-            continue;
-        }
 
         // Skip empty lines
         if trimmed.is_empty() {
@@ -143,8 +133,13 @@ fn is_heartbeat_empty(content: &str) -> bool {
             continue;
         }
 
-        // Skip empty checkboxes
-        if trimmed.starts_with("- [ ]") && trimmed.len() <= 6 {
+        // Skip HTML comments
+        if trimmed.starts_with("<!--") {
+            continue;
+        }
+
+        // Skip empty/completed checkboxes (exact match)
+        if SKIP_PATTERNS.contains(&trimmed) {
             continue;
         }
 
@@ -167,6 +162,19 @@ mod tests {
         assert!(is_heartbeat_empty(
             "# Heartbeat\n\n<!-- Add tasks here -->\n\n## Active\n"
         ));
+    }
+
+    #[test]
+    fn test_checkbox_patterns_are_skipped() {
+        // All checkbox patterns should be treated as empty
+        assert!(is_heartbeat_empty("- [ ]"));
+        assert!(is_heartbeat_empty("* [ ]"));
+        assert!(is_heartbeat_empty("- [x]"));
+        assert!(is_heartbeat_empty("* [x]"));
+        assert!(is_heartbeat_empty("# Tasks\n- [ ]\n* [x]\n"));
+        // Checkbox with label text is NOT empty
+        assert!(!is_heartbeat_empty("- [x] Done task"));
+        assert!(!is_heartbeat_empty("- [ ] Pending task"));
     }
 
     #[test]

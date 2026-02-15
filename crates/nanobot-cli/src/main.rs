@@ -438,7 +438,8 @@ async fn run_gateway(config: &nanobot_config::Config, workspace: &Path) -> Resul
 
     // Register Telegram channel if enabled
     if config.channels.telegram.enabled {
-        match TelegramChannel::new(config.channels.telegram.clone()) {
+        let groq_key = resolve_api_key(&config.providers.groq, "GROQ_API_KEY");
+        match TelegramChannel::new(config.channels.telegram.clone(), groq_key) {
             Ok(tg) => {
                 channel_manager.register(Arc::new(tg)).await;
                 tracing::info!("Telegram channel registered");
