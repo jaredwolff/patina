@@ -33,14 +33,17 @@ use crate::markdown::markdown_to_telegram_html;
 pub struct TelegramChannel {
     config: TelegramConfig,
     bot: Bot,
-    groq_api_key: Option<String>,
+    transcriber: Option<Arc<dyn nanobot_transcribe::Transcriber>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     typing_tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
 }
 
 impl TelegramChannel {
     /// Create a new Telegram channel from config.
-    pub fn new(config: TelegramConfig, groq_api_key: Option<String>) -> Result<Self> {
+    pub fn new(
+        config: TelegramConfig,
+        transcriber: Option<Arc<dyn nanobot_transcribe::Transcriber>>,
+    ) -> Result<Self> {
         if config.token.is_empty() {
             return Err(anyhow::anyhow!("Telegram bot token not configured"));
         }
@@ -59,7 +62,7 @@ impl TelegramChannel {
         Ok(Self {
             config,
             bot,
-            groq_api_key,
+            transcriber,
             shutdown_tx: Mutex::new(None),
             typing_tasks: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -143,7 +146,7 @@ impl Channel for TelegramChannel {
         let bot = self.bot.clone();
         let config = self.config.clone();
         let typing_tasks = self.typing_tasks.clone();
-        let groq_api_key = self.groq_api_key.clone();
+        let transcriber = self.transcriber.clone();
 
         // Delete webhook to ensure polling works
         if let Err(e) = bot.delete_webhook().await {
@@ -155,9 +158,9 @@ impl Channel for TelegramChannel {
             move |bot: Bot, msg: Message, inbound_tx: mpsc::Sender<InboundMessage>| {
                 let config = config.clone();
                 let typing_tasks = typing_tasks.clone();
-                let groq_api_key = groq_api_key.clone();
+                let transcriber = transcriber.clone();
                 async move {
-                    handle_message(bot, msg, inbound_tx, config, typing_tasks, groq_api_key).await;
+                    handle_message(bot, msg, inbound_tx, config, typing_tasks, transcriber).await;
                     respond(())
                 }
             },
@@ -272,7 +275,7 @@ async fn handle_message(
     inbound_tx: mpsc::Sender<InboundMessage>,
     config: TelegramConfig,
     typing_tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
-    groq_api_key: Option<String>,
+    transcriber: Option<Arc<dyn nanobot_transcribe::Transcriber>>,
 ) {
     // Extract user info
     let user = match msg.from {
@@ -346,14 +349,19 @@ async fn handle_message(
                 {
                     Ok(path) => {
                         media_paths.push(path.clone());
-                        match transcribe_audio(&path, groq_api_key.as_deref()).await {
-                            Some(text) => {
-                                info!("Transcribed voice: {}...", &text[..text.len().min(50)]);
-                                content_parts.push(format!("[transcription: {text}]"));
+                        if let Some(ref t) = transcriber {
+                            match t.transcribe_file(&path).await {
+                                Ok(text) => {
+                                    info!("Transcribed voice: {}...", &text[..text.len().min(50)]);
+                                    content_parts.push(format!("[transcription: {text}]"));
+                                }
+                                Err(e) => {
+                                    warn!("Voice transcription failed: {e}");
+                                    content_parts.push(format!("[voice: {path}]"));
+                                }
                             }
-                            None => {
-                                content_parts.push(format!("[voice: {path}]"));
-                            }
+                        } else {
+                            content_parts.push(format!("[voice: {path}]"));
                         }
                     }
                     Err(e) => {
@@ -373,14 +381,19 @@ async fn handle_message(
                 {
                     Ok(path) => {
                         media_paths.push(path.clone());
-                        match transcribe_audio(&path, groq_api_key.as_deref()).await {
-                            Some(text) => {
-                                info!("Transcribed audio: {}...", &text[..text.len().min(50)]);
-                                content_parts.push(format!("[transcription: {text}]"));
+                        if let Some(ref t) = transcriber {
+                            match t.transcribe_file(&path).await {
+                                Ok(text) => {
+                                    info!("Transcribed audio: {}...", &text[..text.len().min(50)]);
+                                    content_parts.push(format!("[transcription: {text}]"));
+                                }
+                                Err(e) => {
+                                    warn!("Audio transcription failed: {e}");
+                                    content_parts.push(format!("[audio: {path}]"));
+                                }
                             }
-                            None => {
-                                content_parts.push(format!("[audio: {path}]"));
-                            }
+                        } else {
+                            content_parts.push(format!("[audio: {path}]"));
                         }
                     }
                     Err(e) => {
@@ -536,78 +549,6 @@ fn is_sender_allowed(sender_id: &str, allow_from: &[String]) -> bool {
     }
 
     false
-}
-
-/// Transcribe an audio file using Groq's Whisper API.
-///
-/// Returns `Some(text)` on success, `None` if no API key or on error.
-async fn transcribe_audio(file_path: &str, api_key: Option<&str>) -> Option<String> {
-    let api_key = match api_key {
-        Some(k) if !k.is_empty() => k,
-        _ => {
-            warn!("Groq API key not configured for voice transcription");
-            return None;
-        }
-    };
-
-    let path = std::path::Path::new(file_path);
-    if !path.exists() {
-        error!("Audio file not found: {file_path}");
-        return None;
-    }
-
-    let file_bytes = match tokio::fs::read(path).await {
-        Ok(b) => b,
-        Err(e) => {
-            error!("Failed to read audio file: {e}");
-            return None;
-        }
-    };
-
-    let file_name = path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-
-    let file_part = reqwest::multipart::Part::bytes(file_bytes)
-        .file_name(file_name)
-        .mime_str("audio/ogg")
-        .ok()?;
-
-    let form = reqwest::multipart::Form::new()
-        .part("file", file_part)
-        .text("model", "whisper-large-v3");
-
-    let client = reqwest::Client::new();
-    match client
-        .post("https://api.groq.com/openai/v1/audio/transcriptions")
-        .header("Authorization", format!("Bearer {api_key}"))
-        .multipart(form)
-        .timeout(std::time::Duration::from_secs(60))
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                error!("Groq transcription failed ({status}): {body}");
-                return None;
-            }
-            match resp.json::<serde_json::Value>().await {
-                Ok(data) => data.get("text").and_then(|t| t.as_str()).map(String::from),
-                Err(e) => {
-                    error!("Failed to parse Groq transcription response: {e}");
-                    None
-                }
-            }
-        }
-        Err(e) => {
-            error!("Groq transcription request failed: {e}");
-            None
-        }
-    }
 }
 
 /// Download a media file from Telegram to ~/.nanobot/media/.

@@ -1,20 +1,24 @@
 [package]
-name = "nanobot-channels"
+name = "nanobot-transcribe"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+parakeet = ["dep:parakeet-rs"]
+cuda = ["parakeet", "parakeet-rs/cuda"]
+migraphx = ["parakeet", "parakeet-rs/migraphx"]
+tensorrt = ["parakeet", "parakeet-rs/tensorrt"]
+
 [dependencies]
-nanobot-core = { workspace = true }
 nanobot-config = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-teloxide = { workspace = true }
-regex = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
+which = { workspace = true }
 dirs = { workspace = true }
-nanobot-transcribe = { workspace = true }
+parakeet-rs = { version = "0.3.3", optional = true, default-features = false, features = ["load-dynamic"] }

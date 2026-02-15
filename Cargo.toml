@@ -3,6 +3,7 @@ members = [
     "crates/nanobot-config",
     "crates/nanobot-core",
     "crates/nanobot-channels",
+    "crates/nanobot-transcribe",
     "crates/nanobot-cli",
 ]
 resolver = "2"
@@ -39,3 +40,4 @@ teloxide = { version = "0.17", features = ["macros"] }
 nanobot-config = { path = "crates/nanobot-config" }
 nanobot-core = { path = "crates/nanobot-core" }
 nanobot-channels = { path = "crates/nanobot-channels" }
+nanobot-transcribe = { path = "crates/nanobot-transcribe" }

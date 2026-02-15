@@ -8,6 +8,7 @@ pub struct Config {
     pub providers: ProvidersConfig,
     pub tools: ToolsConfig,
     pub heartbeat: HeartbeatConfig,
+    pub transcription: TranscriptionConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -130,4 +131,25 @@ impl Default for HeartbeatConfig {
             interval_secs: 1800, // 30 minutes
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TranscriptionConfig {
+    pub mode: TranscriptionMode,
+    /// Path to local model directory.
+    /// Default: ~/.nanobot/models/parakeet-tdt
+    pub model_path: Option<String>,
+    /// GPU execution provider: "cpu", "cuda", "migraphx", "tensorrt".
+    /// Default: "cpu"
+    pub execution_provider: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscriptionMode {
+    Local,
+    Groq,
+    #[default]
+    Auto,
 }

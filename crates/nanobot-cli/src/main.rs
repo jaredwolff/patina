@@ -439,7 +439,18 @@ async fn run_gateway(config: &nanobot_config::Config, workspace: &Path) -> Resul
     // Register Telegram channel if enabled
     if config.channels.telegram.enabled {
         let groq_key = resolve_api_key(&config.providers.groq, "GROQ_API_KEY");
-        match TelegramChannel::new(config.channels.telegram.clone(), groq_key) {
+        let transcriber =
+            match nanobot_transcribe::create_transcriber(&config.transcription, groq_key) {
+                Ok(t) => {
+                    tracing::info!("Voice transcription initialized");
+                    Some(Arc::from(t))
+                }
+                Err(e) => {
+                    tracing::warn!("Voice transcription unavailable: {e}");
+                    None
+                }
+            };
+        match TelegramChannel::new(config.channels.telegram.clone(), transcriber) {
             Ok(tg) => {
                 channel_manager.register(Arc::new(tg)).await;
                 tracing::info!("Telegram channel registered");
@@ -746,6 +757,15 @@ fn run_onboard(config_arg: Option<PathBuf>) -> Result<()> {
     );
     println!("  2. Run `nanobot agent` to start chatting");
     println!();
+    println!("For voice transcription (Telegram), download the Parakeet TDT model:");
+    println!("  mkdir -p ~/.nanobot/models/parakeet-tdt && cd $_");
+    println!("  wget https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/encoder-model.onnx");
+    println!("  wget https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/encoder-model.onnx.data");
+    println!("  wget https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/decoder_joint-model.onnx");
+    println!(
+        "  wget https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/vocab.txt"
+    );
+    println!();
 
     Ok(())
 }
@@ -815,6 +835,42 @@ fn run_status(config_path: &Path) -> Result<()> {
         }
     );
     println!("    Exec timeout: {}s", config.tools.exec.timeout_secs);
+    println!();
+
+    // Transcription
+    println!("  Transcription:");
+    println!("    Mode: {:?}", config.transcription.mode);
+    let model_path = config.transcription.model_path.clone().unwrap_or_else(|| {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        home.join(".nanobot/models/parakeet-tdt")
+            .to_string_lossy()
+            .to_string()
+    });
+    println!(
+        "    Model: {} ({})",
+        model_path,
+        if nanobot_transcribe::model_files_exist(&model_path) {
+            "found"
+        } else {
+            "not found"
+        }
+    );
+    println!(
+        "    ffmpeg: {}",
+        if nanobot_transcribe::audio::ffmpeg_available() {
+            "available"
+        } else {
+            "not found"
+        }
+    );
+    println!(
+        "    Execution provider: {}",
+        config
+            .transcription
+            .execution_provider
+            .as_deref()
+            .unwrap_or("cpu")
+    );
 
     Ok(())
 }
