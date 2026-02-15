@@ -9,7 +9,7 @@ use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
-use nanobot_core::bus::{InboundMessage, OutboundMessage};
+use patina_core::bus::{InboundMessage, OutboundMessage};
 
 use crate::base::Channel;
 

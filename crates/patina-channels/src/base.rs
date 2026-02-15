@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use nanobot_core::bus::{InboundMessage, OutboundMessage};
+use patina_core::bus::{InboundMessage, OutboundMessage};
 
 /// Trait that all chat channel implementations must satisfy.
 ///

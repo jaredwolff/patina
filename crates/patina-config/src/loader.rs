@@ -22,17 +22,17 @@ pub fn find_config_path() -> PathBuf {
         return local.to_path_buf();
     }
 
-    // 2. ~/.nanobot/config.json
+    // 2. ~/.patina/config.json
     if let Some(home) = dirs::home_dir() {
-        let home_config = home.join(".nanobot").join("config.json");
+        let home_config = home.join(".patina").join("config.json");
         if home_config.exists() {
             return home_config;
         }
     }
 
-    // Default: ~/.nanobot/config.json (will use defaults if missing)
+    // Default: ~/.patina/config.json (will use defaults if missing)
     dirs::home_dir()
-        .map(|h| h.join(".nanobot").join("config.json"))
+        .map(|h| h.join(".patina").join("config.json"))
         .unwrap_or_else(|| PathBuf::from("config.json"))
 }
 

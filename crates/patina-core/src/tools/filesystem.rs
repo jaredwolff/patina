@@ -395,7 +395,7 @@ mod tests {
     async fn test_read_file_not_found() {
         let tool = ReadFileTool::new(None);
         let result = tool
-            .execute(serde_json::json!({"path": "/tmp/nonexistent_nanobot_test_file.txt"}))
+            .execute(serde_json::json!({"path": "/tmp/nonexistent_patina_test_file.txt"}))
             .await
             .unwrap();
         assert!(result.contains("not found"));
@@ -463,7 +463,7 @@ mod tests {
         let tool = WriteFileTool::new(Some(dir.path().to_path_buf()));
         let result = tool
             .execute(serde_json::json!({
-                "path": "/tmp/nanobot_escape_test.txt",
+                "path": "/tmp/patina_escape_test.txt",
                 "content": "nope"
             }))
             .await
@@ -562,7 +562,7 @@ mod tests {
     async fn test_list_dir_not_found() {
         let tool = ListDirTool::new(None);
         let result = tool
-            .execute(serde_json::json!({"path": "/tmp/nonexistent_nanobot_dir_test"}))
+            .execute(serde_json::json!({"path": "/tmp/nonexistent_patina_dir_test"}))
             .await
             .unwrap();
         assert!(result.contains("not found"));

@@ -7,7 +7,7 @@
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets`
 - `cargo test --workspace`
-- Release-binary smoke checks (`nanobot --help`, `nanobot status`)
+- Release-binary smoke checks (`patina --help`, `patina status`)
 
 ## Tagged Builds
 
@@ -16,7 +16,7 @@
 - tags matching `v*` (for example `v0.1.0`)
 - manual `workflow_dispatch`
 
-It builds `nanobot` on Linux, macOS, and Windows and uploads archive artifacts with SHA256 checksums.
+It builds `patina` on Linux, macOS, and Windows and uploads archive artifacts with SHA256 checksums.
 
 ## Local Packaging
 
@@ -34,5 +34,5 @@ Optional explicit target triple:
 
 Artifacts are written to `dist/`:
 
-- `nanobot-rs-<version>-<platform>.tar.gz`
-- `nanobot-rs-<version>-<platform>.sha256`
+- `patina-bot-<version>-<platform>.tar.gz`
+- `patina-bot-<version>-<platform>.sha256`

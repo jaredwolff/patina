@@ -31,7 +31,7 @@ pub struct SubagentManager {
     model: CompletionModelHandle<'static>,
     workspace: PathBuf,
     inbound_tx: mpsc::Sender<InboundMessage>,
-    config: nanobot_config::Config,
+    config: patina_config::Config,
 }
 
 #[allow(deprecated)]
@@ -40,7 +40,7 @@ impl SubagentManager {
         model: CompletionModelHandle<'static>,
         workspace: PathBuf,
         inbound_tx: mpsc::Sender<InboundMessage>,
-        config: nanobot_config::Config,
+        config: patina_config::Config,
     ) -> Self {
         Self {
             running: Arc::new(Mutex::new(HashMap::new())),
@@ -173,7 +173,7 @@ impl SubagentManager {
     ) -> Result<AgentLoop<CompletionModelHandle<'static>>> {
         let sessions_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".nanobot")
+            .join(".patina")
             .join("sessions");
         let sessions = SessionManager::new(sessions_dir);
 

@@ -1,17 +1,17 @@
 [package]
-name = "nanobot-cli"
+name = "patina-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "nanobot"
+name = "patina"
 path = "src/main.rs"
 
 [dependencies]
-nanobot-core = { workspace = true }
-nanobot-channels = { workspace = true }
-nanobot-config = { workspace = true }
+patina-core = { workspace = true }
+patina-channels = { workspace = true }
+patina-config = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
@@ -23,6 +23,6 @@ dirs = { workspace = true }
 rustyline = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
-nanobot-transcribe = { workspace = true, features = ["parakeet"] }
+patina-transcribe = { workspace = true, features = ["parakeet"] }
 termimad = { workspace = true }
 nix = { workspace = true }

@@ -32,7 +32,7 @@ pub struct AgentDefaults {
 impl Default for AgentDefaults {
     fn default() -> Self {
         Self {
-            workspace: "~/.nanobot/workspace".into(),
+            workspace: "~/.patina/workspace".into(),
             model: "gpt-oss-20b-GGUF".into(),
             max_tokens: 8192,
             temperature: 0.7,
@@ -157,7 +157,7 @@ pub struct TranscriptionConfig {
     #[serde(alias = "engine")]
     pub mode: TranscriptionMode,
     /// Path to local model directory.
-    /// Default: ~/.nanobot/models/parakeet-tdt
+    /// Default: ~/.patina/models/parakeet-tdt
     #[serde(alias = "model")]
     pub model_path: Option<String>,
     /// GPU execution provider: "cpu", "cuda", "migraphx", "tensorrt".

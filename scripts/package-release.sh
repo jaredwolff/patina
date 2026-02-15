@@ -8,23 +8,23 @@ VERSION="${1:-dev}"
 TARGET="${2:-}"
 
 if [[ -n "$TARGET" ]]; then
-  cargo build --release -p nanobot-cli --target "$TARGET"
-  BIN_PATH="target/$TARGET/release/nanobot"
+  cargo build --release -p patina-cli --target "$TARGET"
+  BIN_PATH="target/$TARGET/release/patina"
   PKG_SUFFIX="$TARGET"
 else
-  cargo build --release -p nanobot-cli
-  BIN_PATH="target/release/nanobot"
+  cargo build --release -p patina-cli
+  BIN_PATH="target/release/patina"
   PKG_SUFFIX="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | tr '[:upper:]' '[:lower:]')"
 fi
 
-PKG_DIR="nanobot-rs-${VERSION}-${PKG_SUFFIX}"
+PKG_DIR="patina-bot-${VERSION}-${PKG_SUFFIX}"
 OUT_DIR="dist"
 
 mkdir -p "$OUT_DIR"
 rm -rf "$OUT_DIR/$PKG_DIR"
 mkdir -p "$OUT_DIR/$PKG_DIR"
 
-cp "$BIN_PATH" "$OUT_DIR/$PKG_DIR/nanobot"
+cp "$BIN_PATH" "$OUT_DIR/$PKG_DIR/patina"
 cp README.md "$OUT_DIR/$PKG_DIR/README.md"
 cp config.example.json "$OUT_DIR/$PKG_DIR/config.example.json"
 

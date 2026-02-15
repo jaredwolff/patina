@@ -4,21 +4,21 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use nanobot_channels::manager::ChannelManager;
-use nanobot_channels::telegram::TelegramChannel;
-use nanobot_config::{find_config_path, load_config, resolve_workspace};
-use nanobot_core::agent::subagent::SubagentManager;
-use nanobot_core::agent::{AgentLoop, ContextBuilder, ModelOverrides};
-use nanobot_core::bus::{MessageBus, OutboundMessage};
-use nanobot_core::cron::CronService;
-use nanobot_core::session::SessionManager;
-use nanobot_core::tools::cron::CronTool;
-use nanobot_core::tools::filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
-use nanobot_core::tools::message::MessageTool;
-use nanobot_core::tools::shell::ExecTool;
-use nanobot_core::tools::spawn::SpawnTool;
-use nanobot_core::tools::web::{WebFetchTool, WebSearchTool};
-use nanobot_core::tools::ToolRegistry;
+use patina_channels::manager::ChannelManager;
+use patina_channels::telegram::TelegramChannel;
+use patina_config::{find_config_path, load_config, resolve_workspace};
+use patina_core::agent::subagent::SubagentManager;
+use patina_core::agent::{AgentLoop, ContextBuilder, ModelOverrides};
+use patina_core::bus::{MessageBus, OutboundMessage};
+use patina_core::cron::CronService;
+use patina_core::session::SessionManager;
+use patina_core::tools::cron::CronTool;
+use patina_core::tools::filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
+use patina_core::tools::message::MessageTool;
+use patina_core::tools::shell::ExecTool;
+use patina_core::tools::spawn::SpawnTool;
+use patina_core::tools::web::{WebFetchTool, WebSearchTool};
+use patina_core::tools::ToolRegistry;
 #[allow(deprecated)]
 use rig::client::completion::CompletionModelHandle;
 use rig::client::{CompletionClient, Nothing};
@@ -56,7 +56,7 @@ fn flush_pending_input() {
 }
 
 #[derive(Parser)]
-#[command(name = "nanobot", about = "Lightweight AI agent", version)]
+#[command(name = "patina", about = "Lightweight AI agent", version)]
 struct Cli {
     /// Path to config file
     #[arg(short, long)]
@@ -240,7 +240,7 @@ async fn main() -> Result<()> {
 /// Create an interrupt flag for a session. Agent loops consume and clear this flag.
 fn run_interrupt(session: &str) -> Result<()> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let interrupts_dir = home.join(".nanobot").join("interrupts");
+    let interrupts_dir = home.join(".patina").join("interrupts");
     std::fs::create_dir_all(&interrupts_dir)?;
 
     let safe = session
@@ -260,7 +260,7 @@ fn run_interrupt(session: &str) -> Result<()> {
 
 /// Resolve an API key from config, falling back to an environment variable.
 fn resolve_api_key(
-    provider_cfg: &Option<nanobot_config::ProviderConfig>,
+    provider_cfg: &Option<patina_config::ProviderConfig>,
     env_var: &str,
 ) -> Option<String> {
     provider_cfg
@@ -273,11 +273,11 @@ fn resolve_api_key(
 /// Resolve builtin skills directory for progressive skill loading.
 ///
 /// Resolution order:
-/// 1) `NANOBOT_BUILTIN_SKILLS` env var
+/// 1) `PATINA_BUILTIN_SKILLS` env var
 /// 2) Repository-relative path (dev builds)
 /// 3) Current working directory fallbacks
 fn resolve_builtin_skills_dir() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("NANOBOT_BUILTIN_SKILLS") {
+    if let Ok(path) = std::env::var("PATINA_BUILTIN_SKILLS") {
         let p = PathBuf::from(path);
         if p.is_dir() {
             return Some(p);
@@ -288,6 +288,9 @@ fn resolve_builtin_skills_dir() -> Option<PathBuf> {
         vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../nanobot/skills")];
 
     if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("patina/skills"));
+        candidates.push(cwd.join("../patina/skills"));
+        // Backward compat with Python nanobot skills
         candidates.push(cwd.join("nanobot/skills"));
         candidates.push(cwd.join("../nanobot/skills"));
     }
@@ -303,7 +306,7 @@ fn resolve_builtin_skills_dir() -> Option<PathBuf> {
 /// 3. Explicitly configured providers (check for API keys)
 /// 4. Ollama (local-first fallback)
 #[allow(deprecated)]
-fn create_model(config: &nanobot_config::Config) -> Result<CompletionModelHandle<'static>> {
+fn create_model(config: &patina_config::Config) -> Result<CompletionModelHandle<'static>> {
     let model_name = &config.agents.defaults.model;
     let lower = model_name.to_lowercase();
 
@@ -464,7 +467,7 @@ impl ContextTools {
 #[allow(deprecated)]
 #[allow(clippy::type_complexity)]
 fn build_agent_loop(
-    config: &nanobot_config::Config,
+    config: &patina_config::Config,
     workspace: &Path,
 ) -> Result<(
     AgentLoop<CompletionModelHandle<'static>>,
@@ -481,7 +484,7 @@ fn build_agent_loop(
     // Sessions directory
     let sessions_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".nanobot")
+        .join(".patina")
         .join("sessions");
     let sessions = SessionManager::new(sessions_dir);
 
@@ -542,7 +545,7 @@ fn build_agent_loop(
     // Cron service + cron tool
     let cron_store_path = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".nanobot")
+        .join(".patina")
         .join("cron")
         .join("jobs.json");
     let cron_service = Arc::new(Mutex::new(CronService::new(
@@ -575,10 +578,10 @@ fn build_agent_loop(
 }
 
 /// Wrapper to register an `Arc<T: Tool>` in the ToolRegistry (which expects `Box<dyn Tool>`).
-struct ArcToolWrapper<T: nanobot_core::tools::Tool>(Arc<T>);
+struct ArcToolWrapper<T: patina_core::tools::Tool>(Arc<T>);
 
 #[async_trait::async_trait]
-impl<T: nanobot_core::tools::Tool + 'static> nanobot_core::tools::Tool for ArcToolWrapper<T> {
+impl<T: patina_core::tools::Tool + 'static> patina_core::tools::Tool for ArcToolWrapper<T> {
     fn name(&self) -> &str {
         self.0.name()
     }
@@ -595,7 +598,7 @@ impl<T: nanobot_core::tools::Tool + 'static> nanobot_core::tools::Tool for ArcTo
 
 /// Run the full gateway: channels + agent processing loop + cron + heartbeat.
 #[allow(deprecated)]
-async fn run_gateway(config: &nanobot_config::Config, workspace: &Path) -> Result<()> {
+async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result<()> {
     tracing::info!("Starting gateway...");
 
     let (mut agent_loop, context_tools, cron_service, mut bus) =
@@ -610,9 +613,9 @@ async fn run_gateway(config: &nanobot_config::Config, workspace: &Path) -> Resul
     }
 
     // Start heartbeat if enabled
-    let mut heartbeat_service: Option<nanobot_core::heartbeat::HeartbeatService> = None;
+    let mut heartbeat_service: Option<patina_core::heartbeat::HeartbeatService> = None;
     if config.heartbeat.enabled {
-        let mut heartbeat = nanobot_core::heartbeat::HeartbeatService::new(
+        let mut heartbeat = patina_core::heartbeat::HeartbeatService::new(
             workspace.to_path_buf(),
             bus.inbound_tx.clone(),
             Some(config.heartbeat.interval_secs),
@@ -630,7 +633,7 @@ async fn run_gateway(config: &nanobot_config::Config, workspace: &Path) -> Resul
     if config.channels.telegram.enabled {
         let groq_key = resolve_api_key(&config.providers.groq, "GROQ_API_KEY");
         let transcriber =
-            match nanobot_transcribe::create_transcriber(&config.transcription, groq_key) {
+            match patina_transcribe::create_transcriber(&config.transcription, groq_key) {
                 Ok(t) => {
                     tracing::info!("Voice transcription initialized");
                     Some(Arc::from(t))
@@ -799,7 +802,7 @@ async fn run_gateway(config: &nanobot_config::Config, workspace: &Path) -> Resul
                     if let Err(e) = bus.outbound_tx.send(OutboundMessage {
                         channel: msg.channel.clone(),
                         chat_id: msg.chat_id.clone(),
-                        content: "Hi! I'm nanobot.\n\nSend me a message and I'll respond.\n\nCommands:\n/new - Start a new conversation\n/help - Show this help".to_string(),
+                        content: "Hi! I'm Patina.\n\nSend me a message and I'll respond.\n\nCommands:\n/new - Start a new conversation\n/help - Show this help".to_string(),
                         reply_to: None,
                         metadata: msg.metadata.clone(),
                     }) {
@@ -896,7 +899,7 @@ async fn run_interactive(
     context_tools.set_context(channel, chat_id).await;
     let history_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".nanobot")
+        .join(".patina")
         .join("history");
     std::fs::create_dir_all(&history_dir)?;
     let history_path = history_dir.join("cli_history");
@@ -904,7 +907,7 @@ async fn run_interactive(
     let mut rl = DefaultEditor::new()?;
     let _ = rl.load_history(&history_path);
 
-    println!("nanobot interactive mode (type /help for commands, Ctrl-D to quit)");
+    println!("patina interactive mode (type /help for commands, Ctrl-D to quit)");
     println!();
 
     let result = loop {
@@ -934,7 +937,7 @@ async fn run_interactive(
                         println!("  /new   - Start a new conversation (consolidates memory)");
                         println!("  /help  - Show this help");
                         println!(
-                            "  interrupt (external): `nanobot interrupt --session {session_key}`"
+                            "  interrupt (external): `patina interrupt --session {session_key}`"
                         );
                         println!("  /quit  - Exit");
                         println!();
@@ -1054,16 +1057,16 @@ fn prompt_yes_no(prompt: &str, default_yes: bool) -> Result<bool> {
 /// Initialize configuration and workspace with templates.
 fn run_onboard(config_arg: Option<PathBuf>, non_interactive: bool) -> Result<()> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let nanobot_dir = home.join(".nanobot");
-    std::fs::create_dir_all(&nanobot_dir)?;
+    let patina_dir = home.join(".patina");
+    std::fs::create_dir_all(&patina_dir)?;
 
     // Config file
-    let config_path = config_arg.unwrap_or_else(|| nanobot_dir.join("config.json"));
+    let config_path = config_arg.unwrap_or_else(|| patina_dir.join("config.json"));
     if config_path.exists() {
         println!("Config already exists: {}", config_path.display());
-        println!("To reset, delete it and run `nanobot onboard` again.");
+        println!("To reset, delete it and run `patina onboard` again.");
     } else {
-        let mut cfg = nanobot_config::Config::default();
+        let mut cfg = patina_config::Config::default();
         if !non_interactive {
             println!("Interactive setup");
             cfg.agents.defaults.workspace =
@@ -1080,9 +1083,9 @@ fn run_onboard(config_arg: Option<PathBuf>, non_interactive: bool) -> Result<()>
 
             let mode = prompt_with_default("Transcription mode (auto/local/groq)", "auto")?;
             cfg.transcription.mode = match mode.to_lowercase().as_str() {
-                "local" => nanobot_config::TranscriptionMode::Local,
-                "groq" => nanobot_config::TranscriptionMode::Groq,
-                _ => nanobot_config::TranscriptionMode::Auto,
+                "local" => patina_config::TranscriptionMode::Local,
+                "groq" => patina_config::TranscriptionMode::Groq,
+                _ => patina_config::TranscriptionMode::Auto,
             };
         }
 
@@ -1151,14 +1154,14 @@ fn run_onboard(config_arg: Option<PathBuf>, non_interactive: bool) -> Result<()>
         "  1. Edit {} to configure your LLM provider",
         config_path.display()
     );
-    println!("  2. Run `nanobot agent` to start chatting");
+    println!("  2. Run `patina agent` to start chatting");
     println!();
     println!("Voice transcription notes:");
     println!(
         "  - Local model files auto-download on first use when transcription.autoDownload=true."
     );
     println!("  - ffmpeg must be installed for local transcription audio conversion.");
-    println!("  - Manual model setup (optional): ~/.nanobot/models/parakeet-tdt");
+    println!("  - Manual model setup (optional): ~/.patina/models/parakeet-tdt");
     println!();
 
     Ok(())
@@ -1166,7 +1169,7 @@ fn run_onboard(config_arg: Option<PathBuf>, non_interactive: bool) -> Result<()>
 
 /// Show system status and configuration summary.
 fn run_status(config_path: &Path) -> Result<()> {
-    println!("nanobot status");
+    println!("patina status");
     println!();
 
     // Config
@@ -1174,7 +1177,7 @@ fn run_status(config_path: &Path) -> Result<()> {
         println!("  Config:    {} (found)", config_path.display());
     } else {
         println!(
-            "  Config:    {} (not found — run `nanobot onboard`)",
+            "  Config:    {} (not found — run `patina onboard`)",
             config_path.display()
         );
         return Ok(());
@@ -1236,14 +1239,14 @@ fn run_status(config_path: &Path) -> Result<()> {
     println!("    Mode: {:?}", config.transcription.mode);
     let model_path = config.transcription.model_path.clone().unwrap_or_else(|| {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        home.join(".nanobot/models/parakeet-tdt")
+        home.join(".patina/models/parakeet-tdt")
             .to_string_lossy()
             .to_string()
     });
     println!(
         "    Model: {} ({})",
         model_path,
-        if nanobot_transcribe::model_files_exist(&model_path) {
+        if patina_transcribe::model_files_exist(&model_path) {
             "found"
         } else {
             "not found"
@@ -1251,7 +1254,7 @@ fn run_status(config_path: &Path) -> Result<()> {
     );
     println!(
         "    ffmpeg: {}",
-        if nanobot_transcribe::audio::ffmpeg_available() {
+        if patina_transcribe::audio::ffmpeg_available() {
             "available"
         } else {
             "not found"
@@ -1282,7 +1285,7 @@ fn run_status(config_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn print_provider_status(label: &str, provider: &Option<nanobot_config::ProviderConfig>) {
+fn print_provider_status(label: &str, provider: &Option<patina_config::ProviderConfig>) {
     if let Some(p) = provider {
         let has_key = p.api_key.as_ref().is_some_and(|k| !k.is_empty());
         let has_base = p.api_base.as_ref().is_some_and(|b| !b.is_empty());
@@ -1301,12 +1304,12 @@ fn print_provider_status(label: &str, provider: &Option<nanobot_config::Provider
 }
 
 /// Handle cron CLI subcommands.
-async fn run_cron_command(action: CronCommands, config: &nanobot_config::Config) -> Result<()> {
-    use nanobot_core::cron::{CronSchedule, ScheduleKind};
+async fn run_cron_command(action: CronCommands, config: &patina_config::Config) -> Result<()> {
+    use patina_core::cron::{CronSchedule, ScheduleKind};
 
     let store_path = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".nanobot")
+        .join(".patina")
         .join("cron")
         .join("jobs.json");
 
@@ -1459,7 +1462,7 @@ async fn run_cron_command(action: CronCommands, config: &nanobot_config::Config)
                         job.name, job.id, job.payload.message
                     );
                     println!(
-                        "Note: Manual execution requires the gateway to be running (`nanobot serve`)."
+                        "Note: Manual execution requires the gateway to be running (`patina serve`)."
                     );
                 }
                 None => {
@@ -1474,7 +1477,7 @@ async fn run_cron_command(action: CronCommands, config: &nanobot_config::Config)
 }
 
 /// Handle channel CLI subcommands.
-fn run_channel_command(action: ChannelCommands, config: &nanobot_config::Config) -> Result<()> {
+fn run_channel_command(action: ChannelCommands, config: &patina_config::Config) -> Result<()> {
     match action {
         ChannelCommands::Status => {
             println!("Channels:");

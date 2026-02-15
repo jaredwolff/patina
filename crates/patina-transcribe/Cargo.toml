@@ -1,5 +1,5 @@
 [package]
-name = "nanobot-transcribe"
+name = "patina-transcribe"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,7 +12,7 @@ migraphx = ["parakeet", "parakeet-rs/migraphx"]
 tensorrt = ["parakeet", "parakeet-rs/tensorrt"]
 
 [dependencies]
-nanobot-config = { workspace = true }
+patina-config = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }

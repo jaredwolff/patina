@@ -44,8 +44,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build release binary
-        run: cargo build --release -p nanobot-cli
+        run: cargo build --release -p patina-cli
       - name: CLI smoke checks
         run: |
-          ./target/release/nanobot --help
-          ./target/release/nanobot status
+          ./target/release/patina --help
+          ./target/release/patina status

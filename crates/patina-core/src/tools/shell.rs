@@ -194,7 +194,7 @@ mod tests {
     use super::*;
 
     fn make_tool(restrict: bool) -> ExecTool {
-        let dir = std::env::temp_dir().join("nanobot_shell_test");
+        let dir = std::env::temp_dir().join("patina_shell_test");
         std::fs::create_dir_all(&dir).ok();
         ExecTool::new(dir, 10, restrict)
     }
@@ -315,7 +315,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exec_timeout() {
-        let dir = std::env::temp_dir().join("nanobot_shell_test");
+        let dir = std::env::temp_dir().join("patina_shell_test");
         std::fs::create_dir_all(&dir).ok();
         let tool = ExecTool::new(dir, 1, false); // 1 second timeout
 

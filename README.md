@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>nanobot-rs: Lightweight AI Agent Framework</h1>
+  <h1>patina-bot: Lightweight AI Agent Framework</h1>
   <p>
     <img src="https://img.shields.io/badge/rust-1.75+-orange" alt="Rust">
     <img src="https://img.shields.io/badge/status-alpha-yellow" alt="Status">
@@ -12,7 +12,7 @@
 
 ## 🚀 Why Rust?
 
-**nanobot-rs** is a Rust-based AI agent framework inspired by the nanobot concept, designed for:
+**patina-bot** is a Rust-based AI agent framework inspired by the nanobot concept, designed for:
 
 - **🪶 Minimal footprint**: ~30MB memory (vs Python's ~200-400MB)
 - **⚡ Fast startup**: ~50-100ms (vs Python's ~2-3s)
@@ -30,16 +30,16 @@
 
 ```bash
 git clone https://github.com/HKUDS/nanobot.git
-cd nanobot/nanobot-rs
+cd nanobot/patina-bot
 cargo build --release
 ```
 
-Binary will be at `target/release/nanobot`.
+Binary will be at `target/release/patina`.
 
 ### Using Cargo Install
 
 ```bash
-cargo install --path nanobot-rs/crates/nanobot-cli
+cargo install --path patina-bot/crates/patina-cli
 ```
 
 ---
@@ -49,10 +49,10 @@ cargo install --path nanobot-rs/crates/nanobot-cli
 ### 1. Initialize
 
 ```bash
-nanobot onboard
+patina onboard
 ```
 
-This creates config and workspace files (default path: `~/.nanobot/config.json`).
+This creates config and workspace files (default path: `~/.patina/config.json`).
 If `./config.json` exists in your current directory, that local file is used instead.
 
 ### 2. Configure
@@ -60,7 +60,7 @@ If `./config.json` exists in your current directory, that local file is used ins
 Edit the config file selected by priority:
 1. `--config` CLI argument
 2. `./config.json`
-3. `~/.nanobot/config.json`
+3. `~/.patina/config.json`
 
 **For local-first (Ollama, recommended):**
 
@@ -120,25 +120,25 @@ Edit the config file selected by priority:
 
 ```bash
 # Single message
-nanobot agent -m "What is 2+2?"
+patina agent -m "What is 2+2?"
 
 # Interactive mode
-nanobot agent
+patina agent
 ```
 
 ---
 
 ## 🏗️ Architecture
 
-nanobot-rs is a Cargo workspace with 4 crates:
+patina-bot is a Cargo workspace with 4 crates:
 
 ```
-nanobot-rs/
+patina-bot/
 ├── crates/
-│   ├── nanobot-core/      # Agent loop, tools, session management
-│   ├── nanobot-config/    # Configuration schema and loading
-│   ├── nanobot-channels/  # Channel adapters (Telegram, etc.)
-│   └── nanobot-cli/       # CLI binary
+│   ├── patina-core/      # Agent loop, tools, session management
+│   ├── patina-config/    # Configuration schema and loading
+│   ├── patina-channels/  # Channel adapters (Telegram, etc.)
+│   └── patina-cli/       # CLI binary
 ├── Cargo.toml             # Workspace manifest
 └── README.md
 ```
@@ -193,7 +193,7 @@ User Input
 | **Cron Service** | ✅ | MEDIUM | Integrated service + CLI management commands |
 | **Heartbeat** | ✅ | LOW | Background heartbeat loop in gateway |
 | **Telegram Channel** | ✅ | HIGH | Long polling, media handling, markdown conversion |
-| **Gateway Mode** | ✅ | HIGH | Multi-channel routing via `nanobot serve` |
+| **Gateway Mode** | ✅ | HIGH | Multi-channel routing via `patina serve` |
 | **Message Tool** | ✅ | MEDIUM | Sends notifications via active channel bus |
 
 ### 📋 Planned (Phase 4+)
@@ -215,7 +215,7 @@ User Input
 Config file location (checked in order):
 1. `--config` CLI argument
 2. `./config.json`
-3. `~/.nanobot/config.json`
+3. `~/.patina/config.json`
 
 ### Full Config Schema
 
@@ -226,7 +226,7 @@ Config file location (checked in order):
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.nanobot/workspace",
+      "workspace": "~/.patina/workspace",
       "model": "gpt-oss-20b-GGUF",
       "maxTokens": 8192,
       "temperature": 0.7,
@@ -287,7 +287,7 @@ Config file location (checked in order):
   },
   "transcription": {
     "mode": "auto",
-    "modelPath": "~/.nanobot/models/parakeet-tdt",
+    "modelPath": "~/.patina/models/parakeet-tdt",
     "executionProvider": "cpu",
     "autoDownload": true
   }
@@ -324,39 +324,39 @@ Provider selection is currently:
 
 ```bash
 # Initialize config and workspace
-nanobot onboard
+patina onboard
 
 # Initialize without prompts
-nanobot onboard --non-interactive
+patina onboard --non-interactive
 
 # Interactive chat (REPL)
-nanobot agent
+patina agent
 
 # Single message
-nanobot agent -m "Hello, world!"
+patina agent -m "Hello, world!"
 
 # Custom session ID
-nanobot agent -s "my-session"
+patina agent -s "my-session"
 
 # Custom config path
-nanobot -c /path/to/config.json agent
+patina -c /path/to/config.json agent
 
 # Interrupt a running session
-nanobot interrupt --session "cli:interactive"
+patina interrupt --session "cli:interactive"
 
 # Start gateway (receive messages from channels)
-nanobot serve
+patina serve
 
 # Show status
-nanobot status
+patina status
 
 # Cron management
-nanobot cron list
-nanobot cron add --name morning --message "Daily check-in" --every 3600
-nanobot cron run <job_id>
+patina cron list
+patina cron add --name morning --message "Daily check-in" --every 3600
+patina cron run <job_id>
 
 # Channel status
-nanobot channels status
+patina channels status
 ```
 
 ### Build Commands
@@ -372,7 +372,7 @@ cargo build --release
 cargo test
 
 # Run with logging
-RUST_LOG=debug cargo run --bin nanobot-cli -- agent
+RUST_LOG=debug cargo run --bin patina -- agent
 ```
 
 ---
@@ -410,7 +410,7 @@ RUST_LOG=debug cargo run --bin nanobot-cli -- agent
 **Setup**:
 1. Create bot via @BotFather
 2. Copy token to config
-3. Run `nanobot serve`
+3. Run `patina serve`
 
 ### Other Channels
 
@@ -495,7 +495,7 @@ Skills are markdown files with YAML frontmatter that extend agent capabilities.
 ### Example Skill Structure
 
 ```
-~/.nanobot/skills/my-skill/
+~/.patina/skills/my-skill/
 ├── SKILL.md          # Instructions + YAML metadata
 ├── scripts/          # Optional helper scripts
 │   └── helper.py
@@ -507,7 +507,7 @@ Skills are markdown files with YAML frontmatter that extend agent capabilities.
 
 ## 💾 Sessions
 
-Sessions are stored as JSONL files at `~/.nanobot/sessions/{session_key}.jsonl`.
+Sessions are stored as JSONL files at `~/.patina/sessions/{session_key}.jsonl`.
 
 ### Format
 

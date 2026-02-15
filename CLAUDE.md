@@ -14,12 +14,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [Build and Test Commands](#build-and-test-commands)
 - [Configuration](#configuration)
 - [Architecture](#architecture)
-  - [Agent Loop](#agent-loop-nanobot-coresrcagentlooprs)
-  - [Sessions](#sessions-nanobot-coresrcsessionrs)
-  - [Tool System](#tool-system-nanobot-coresrctools)
-  - [Message Bus](#message-bus-nanobot-coresrcbusrs)
-  - [Provider Selection](#provider-selection-nanobot-clisrcmainrs)
-  - [Context Builder](#context-builder-nanobot-coresrcagentcontextrs)
+  - [Agent Loop](#agent-loop-patina-coresrcagentlooprs)
+  - [Sessions](#sessions-patina-coresrcsessionrs)
+  - [Tool System](#tool-system-patina-coresrctools)
+  - [Message Bus](#message-bus-patina-coresrcbusrs)
+  - [Provider Selection](#provider-selection-patina-clisrcmainrs)
+  - [Context Builder](#context-builder-patina-coresrcagentcontextrs)
 - [Development Notes](#development-notes)
   - [Session Persistence Format](#session-persistence-format)
   - [Error Handling](#error-handling)
@@ -30,8 +30,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [Design Principles](#design-principles)
   - [Local-First Philosophy](#local-first-philosophy)
   - [Configuration and Session Formats](#configuration-and-session-formats)
-  - [Skills Architecture](#skills-architecture-nanobot-coresrcagentskillsrs)
-  - [Channel Architecture](#channel-architecture-nanobot-channels)
+  - [Skills Architecture](#skills-architecture-patina-coresrcagentskillsrs)
+  - [Channel Architecture](#channel-architecture-patina-channels)
 - [Code Quality Guidelines](#code-quality-guidelines)
 - [Testing Guidelines](#testing-guidelines)
 - [Documentation Updates](#documentation-updates)
@@ -39,13 +39,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Nanobot-rs is a Rust rewrite of the Python nanobot framework (`../nanobot/`). It is a lightweight AI agent framework designed to run LLM agents with tool-calling capabilities across multiple chat channels. It supports interactive CLI mode and gateway mode for persistent messaging integrations.
+Patina-bot is a Rust rewrite of the Python nanobot framework (`../nanobot/`). It is a lightweight AI agent framework designed to run LLM agents with tool-calling capabilities across multiple chat channels. It supports interactive CLI mode and gateway mode for persistent messaging integrations.
 
 The Python version at `../nanobot/` is the **reference implementation**. The Rust version aims for feature parity, optimized for low memory usage, fast startup, and local-first inference.
 
 ## Python Reference Comparison
 
-**Always compare with the Python implementation** when working on nanobot-rs. The Python codebase at `../nanobot/` is the source of truth for behavior and features.
+**Always compare with the Python implementation** when working on patina-bot. The Python codebase at `../nanobot/` is the source of truth for behavior and features.
 
 ### How to Compare
 
@@ -59,20 +59,20 @@ Before implementing or modifying any feature:
 
 | Python Module | Rust Crate/Module | Parity Status |
 |---|---|---|
-| `nanobot/agent/loop.py` | `nanobot-core/src/agent/loop.rs` | ✅ Complete |
-| `nanobot/agent/context.py` | `nanobot-core/src/agent/context.rs` | ✅ Complete |
-| `nanobot/agent/memory.py` | `nanobot-core/src/agent/memory.rs` | ✅ Complete |
-| `nanobot/agent/skills.py` | `nanobot-core/src/agent/skills.rs` | ✅ Complete |
-| `nanobot/agent/subagent.py` | `nanobot-core/src/agent/subagent.rs` | ✅ Complete |
-| `nanobot/agent/tools/` | `nanobot-core/src/tools/` | ✅ Complete (all 12 tools) |
-| `nanobot/config/` | `nanobot-config/` | ✅ Complete |
-| `nanobot/session/` | `nanobot-core/src/session.rs` | ✅ Complete |
-| `nanobot/bus/` | `nanobot-core/src/bus.rs` | ✅ Complete |
-| `nanobot/cron/` | `nanobot-core/src/cron/` | ✅ Complete |
-| `nanobot/heartbeat/` | `nanobot-core/src/heartbeat.rs` | ✅ Complete |
+| `nanobot/agent/loop.py` | `patina-core/src/agent/loop.rs` | ✅ Complete |
+| `nanobot/agent/context.py` | `patina-core/src/agent/context.rs` | ✅ Complete |
+| `nanobot/agent/memory.py` | `patina-core/src/agent/memory.rs` | ✅ Complete |
+| `nanobot/agent/skills.py` | `patina-core/src/agent/skills.rs` | ✅ Complete |
+| `nanobot/agent/subagent.py` | `patina-core/src/agent/subagent.rs` | ✅ Complete |
+| `nanobot/agent/tools/` | `patina-core/src/tools/` | ✅ Complete (all 12 tools) |
+| `nanobot/config/` | `patina-config/` | ✅ Complete |
+| `nanobot/session/` | `patina-core/src/session.rs` | ✅ Complete |
+| `nanobot/bus/` | `patina-core/src/bus.rs` | ✅ Complete |
+| `nanobot/cron/` | `patina-core/src/cron/` | ✅ Complete |
+| `nanobot/heartbeat/` | `patina-core/src/heartbeat.rs` | ✅ Complete |
 | `nanobot/providers/` | rig-core (external) | ✅ Complete (19 vs 50+ providers) |
-| `nanobot/providers/transcription.py` | `nanobot-transcribe/` | ✅ Improved (local-first Parakeet + Groq fallback) |
-| `nanobot/channels/telegram.py` | `nanobot-channels/src/telegram.rs` | ✅ Complete |
+| `nanobot/providers/transcription.py` | `patina-transcribe/` | ✅ Improved (local-first Parakeet + Groq fallback) |
+| `nanobot/channels/telegram.py` | `patina-channels/src/telegram.rs` | ✅ Complete |
 | `nanobot/channels/discord.py` | — | ❌ Not started |
 | `nanobot/channels/slack.py` | — | ❌ Not started |
 | `nanobot/channels/whatsapp.py` | — | ❌ Not started |
@@ -81,7 +81,7 @@ Before implementing or modifying any feature:
 | `nanobot/channels/feishu.py` | — | ❌ Not started |
 | `nanobot/channels/mochat.py` | — | ❌ Not started |
 | `nanobot/channels/email.py` | — | ❌ Not started |
-| `nanobot/cli/` | `nanobot-cli/` | ✅ Complete |
+| `nanobot/cli/` | `patina-cli/` | ✅ Complete |
 
 ### Rewrite Plan Status (from `../RUST_REWRITE_PLAN.md`)
 
@@ -119,10 +119,10 @@ These divergences from Python are by design:
 
 This is a Cargo workspace with 4 crates:
 
-- **nanobot-core**: Agent loop, session management, tool system, message bus
-- **nanobot-config**: Configuration schema and loading
-- **nanobot-channels**: Channel adapters (Telegram, etc.) and ChannelManager
-- **nanobot-cli**: Main binary with CLI and gateway modes
+- **patina-core**: Agent loop, session management, tool system, message bus
+- **patina-config**: Configuration schema and loading
+- **patina-channels**: Channel adapters (Telegram, etc.) and ChannelManager
+- **patina-cli**: Main binary with CLI and gateway modes
 
 ## Build and Test Commands
 
@@ -137,16 +137,16 @@ cargo build --release
 cargo test
 
 # Run the CLI agent in interactive mode
-cargo run --bin nanobot-cli -- agent
+cargo run --bin patina-cli -- agent
 
 # Run a single message (non-interactive)
-cargo run --bin nanobot-cli -- agent -m "your message here"
+cargo run --bin patina-cli -- agent -m "your message here"
 
 # Start gateway mode
-cargo run --bin nanobot-cli -- serve
+cargo run --bin patina-cli -- serve
 
 # Specify custom config
-cargo run --bin nanobot-cli -- -c /path/to/config.json agent
+cargo run --bin patina-cli -- -c /path/to/config.json agent
 ```
 
 ## Configuration
@@ -154,7 +154,7 @@ cargo run --bin nanobot-cli -- -c /path/to/config.json agent
 Config is stored in JSON format (camelCase). Default locations checked in order:
 1. `--config` CLI argument
 2. `./config.json`
-3. `~/.nanobot/config.json`
+3. `~/.patina/config.json`
 
 See `config.example.json` for full schema. Key sections:
 - `agents.defaults`: Model settings, workspace path, iteration limits
@@ -164,7 +164,7 @@ See `config.example.json` for full schema. Key sections:
 
 ## Architecture
 
-### Agent Loop (nanobot-core/src/agent/loop.rs)
+### Agent Loop (patina-core/src/agent/loop.rs)
 
 The `AgentLoop` is the core orchestrator:
 1. Loads session history from JSONL files (compatible with Python nanobot)
@@ -176,9 +176,9 @@ The `AgentLoop` is the core orchestrator:
 
 Tool loop iterations are logged with `[N/max]` prefix.
 
-### Sessions (nanobot-core/src/session.rs)
+### Sessions (patina-core/src/session.rs)
 
-Sessions are persisted as JSONL files in `~/.nanobot/sessions/`:
+Sessions are persisted as JSONL files in `~/.patina/sessions/`:
 - First line is metadata (type="metadata", timestamps, last_consolidated)
 - Subsequent lines are messages (role, content, timestamp, tools_used)
 - Session keys like `"cli:interactive"` are sanitized to filenames (`cli_interactive.jsonl`)
@@ -190,7 +190,7 @@ Sessions track:
 - Created/updated timestamps
 - Memory window limits (only recent N messages sent to LLM)
 
-### Tool System (nanobot-core/src/tools/)
+### Tool System (patina-core/src/tools/)
 
 All tools implement the `Tool` trait:
 ```rust
@@ -213,7 +213,7 @@ Current tools:
 
 Tools are registered in `main.rs` during `build_agent_loop()`.
 
-### Message Bus (nanobot-core/src/bus.rs)
+### Message Bus (patina-core/src/bus.rs)
 
 Async pub/sub system connecting channels to the agent:
 - `InboundMessage`: From channels → agent (channel, sender_id, chat_id, content, media)
@@ -222,7 +222,7 @@ Async pub/sub system connecting channels to the agent:
 
 Session keys are derived as `"{channel}:{chat_id}"`.
 
-### Provider Selection (nanobot-cli/src/main.rs)
+### Provider Selection (patina-cli/src/main.rs)
 
 The `create_model()` function prioritizes providers in this order:
 1. **OpenAI-compatible with custom apiBase** (llama.cpp, vLLM, etc.) - checked first for local-first deployment
@@ -232,12 +232,12 @@ The `create_model()` function prioritizes providers in this order:
 
 Note: The codebase uses `rig-core` 0.30 for LLM abstraction. The `CompletionModelHandle` pattern is used to work around lifetime issues.
 
-### Context Builder (nanobot-core/src/agent/context.rs)
+### Context Builder (patina-core/src/agent/context.rs)
 
 Builds system prompt and message history for the LLM. Injects workspace path and available tools into context. Currently uses a simple message list builder but is extensible for:
-- Skills (nanobot-core/src/agent/skills.rs)
-- Subagents (nanobot-core/src/agent/subagent.rs)
-- Memory consolidation (nanobot-core/src/agent/memory.rs)
+- Skills (patina-core/src/agent/skills.rs)
+- Subagents (patina-core/src/agent/subagent.rs)
+- Memory consolidation (patina-core/src/agent/memory.rs)
 
 ## Development Notes
 
@@ -263,7 +263,7 @@ Uses `tracing` with env filter (default: info level). Set `RUST_LOG=debug` for v
 
 ### Gateway Mode
 
-The `serve` command (implemented in `nanobot-cli/src/main.rs` via `run_gateway()`) starts the full gateway:
+The `serve` command (implemented in `patina-cli/src/main.rs` via `run_gateway()`) starts the full gateway:
 1. Initializes `ChannelManager` and registers enabled channels
 2. Starts Telegram long polling (with Parakeet transcription)
 3. Starts cron service and heartbeat (if enabled)
@@ -346,7 +346,7 @@ Example: "Read all .rs files and count total lines"
 
 ### Local-First Philosophy
 
-Provider priority order (see `create_model()` in nanobot-cli/src/main.rs):
+Provider priority order (see `create_model()` in patina-cli/src/main.rs):
 1. **OpenAI-compatible with custom apiBase** (llama.cpp, vLLM, LocalAI) - prioritized for local deployment
 2. **Auto-detected cloud providers** (Anthropic, OpenAI, DeepSeek, Gemini, etc.) - when API keys configured
 3. **Ollama** (local, no API key needed) - final fallback
@@ -362,14 +362,14 @@ Standard formats for interoperability:
 - **Session JSONL**: Metadata line followed by message lines
 - **Session keys**: Format `"{channel}:{chat_id}"`
 
-### Skills Architecture (nanobot-core/src/agent/skills.rs)
+### Skills Architecture (patina-core/src/agent/skills.rs)
 
 Three-layer design (layers 1 and 2 implemented):
 1. **Markdown skills** (implemented): `SKILL.md` files with YAML frontmatter — LLM interprets instructions. Skills loader parses frontmatter, checks requirements (`bins`, `env` via `which` crate and `std::env`), progressive loading (metadata always in context, full body on-demand via `read_file`). Always-loaded skills injected into system prompt.
 2. **Bundled scripts** (implemented): Python/Bash scripts in `scripts/` dir — executed via `exec` tool
 3. **WASM plugins** (deferred): Native tool plugins with sandboxed execution
 
-### Channel Architecture (nanobot-channels/)
+### Channel Architecture (patina-channels/)
 
 The `Channel` trait (`base.rs`) and `ChannelManager` (`manager.rs`) are fully implemented:
 ```rust
@@ -450,7 +450,7 @@ For integration tests, use `tests/` directory in each crate.
 cargo test
 
 # Run tests for specific crate
-cargo test -p nanobot-core
+cargo test -p patina-core
 
 # Run specific test
 cargo test test_name
@@ -513,7 +513,7 @@ Update README.md:
 
 ## Git Commit Workflow
 
-After completing work on nanobot-rs, follow this workflow to commit changes:
+After completing work on patina-bot, follow this workflow to commit changes:
 
 ### When to Commit
 
@@ -545,13 +545,13 @@ Commit changes when:
 
 4. **Stage relevant files**:
    ```bash
-   git add nanobot-rs/
+   git add patina-bot/
    ```
    Or stage specific files if mixing work.
 
 5. **Create commit with descriptive message**:
    ```bash
-   git commit -m "feat(nanobot-rs): implement memory consolidation
+   git commit -m "feat(patina-bot): implement memory consolidation
 
    - Add MEMORY.md/HISTORY.md summarization
    - Integrate with agent loop on threshold
@@ -565,21 +565,21 @@ Commit changes when:
 ### Commit Message Guidelines
 
 - **Prefix**: Use conventional commits (feat, fix, docs, refactor, test, chore)
-- **Scope**: Use `(nanobot-rs)` to distinguish from Python nanobot commits
+- **Scope**: Use `(patina-bot)` to distinguish from Python nanobot commits
 - **Subject**: Imperative mood, lowercase, no period
 - **Body**: Bullet points explaining what changed and why
 - **Footer**: Include Claude Code attribution
 
 Examples:
-- `feat(nanobot-rs): add Telegram channel with thread support`
-- `fix(nanobot-rs): handle malformed session JSONL gracefully`
-- `docs(nanobot-rs): update README with Phase 2 completion`
-- `refactor(nanobot-rs): extract provider selection to separate module`
-- `test(nanobot-rs): add integration tests for agent loop`
+- `feat(patina-bot): add Telegram channel with thread support`
+- `fix(patina-bot): handle malformed session JSONL gracefully`
+- `docs(patina-bot): update README with Phase 2 completion`
+- `refactor(patina-bot): extract provider selection to separate module`
+- `test(patina-bot): add integration tests for agent loop`
 
 **Good commit that includes README update:**
 ```bash
-git commit -m "feat(nanobot-rs): implement memory consolidation
+git commit -m "feat(patina-bot): implement memory consolidation
 
 - Add MEMORY.md/HISTORY.md summarization
 - Integrate with agent loop on threshold

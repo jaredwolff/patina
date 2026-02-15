@@ -1,11 +1,11 @@
 [package]
-name = "nanobot-core"
+name = "patina-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-nanobot-config = { workspace = true }
+patina-config = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

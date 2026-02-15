@@ -1777,104 +1777,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nanobot-channels"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "dirs",
- "nanobot-config",
- "nanobot-core",
- "nanobot-transcribe",
- "regex",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "teloxide",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "nanobot-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "clap",
- "dirs",
- "nanobot-channels",
- "nanobot-config",
- "nanobot-core",
- "nanobot-transcribe",
- "nix",
- "rig-core",
- "rustyline",
- "serde_json",
- "termimad",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "nanobot-config"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dirs",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "nanobot-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "croner",
- "dirs",
- "html-escape",
- "mime_guess",
- "nanobot-config",
- "readability",
- "regex",
- "reqwest 0.12.28",
- "rig-core",
- "schemars 0.8.22",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
- "uuid",
- "which",
-]
-
-[[package]]
-name = "nanobot-transcribe"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "dirs",
- "nanobot-config",
- "parakeet-rs",
- "reqwest 0.12.28",
- "serde_json",
- "tokio",
- "tracing",
- "which",
-]
-
-[[package]]
 name = "nanoid"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2159,6 +2061,104 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "patina-channels"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dirs",
+ "patina-config",
+ "patina-core",
+ "patina-transcribe",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "teloxide",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "patina-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "dirs",
+ "nix",
+ "patina-channels",
+ "patina-config",
+ "patina-core",
+ "patina-transcribe",
+ "rig-core",
+ "rustyline",
+ "serde_json",
+ "termimad",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "patina-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "patina-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "croner",
+ "dirs",
+ "html-escape",
+ "mime_guess",
+ "patina-config",
+ "readability",
+ "regex",
+ "reqwest 0.12.28",
+ "rig-core",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "which",
+]
+
+[[package]]
+name = "patina-transcribe"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "dirs",
+ "parakeet-rs",
+ "patina-config",
+ "reqwest 0.12.28",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "which",
+]
 
 [[package]]
 name = "percent-encoding"

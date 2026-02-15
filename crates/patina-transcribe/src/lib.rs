@@ -10,7 +10,7 @@ pub mod local;
 use anyhow::Result;
 use tracing::{info, warn};
 
-use nanobot_config::{TranscriptionConfig, TranscriptionMode};
+use patina_config::{TranscriptionConfig, TranscriptionMode};
 
 /// Transcription backend trait.
 #[async_trait::async_trait]
@@ -54,7 +54,7 @@ fn resolve_model_path(config: &TranscriptionConfig) -> String {
         path.clone()
     } else {
         let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        home.join(".nanobot")
+        home.join(".patina")
             .join("models")
             .join("parakeet-tdt")
             .to_string_lossy()

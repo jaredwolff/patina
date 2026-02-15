@@ -74,7 +74,7 @@ impl<M: CompletionModel> AgentLoop<M> {
                 _ => c,
             })
             .collect::<String>();
-        home.join(".nanobot")
+        home.join(".patina")
             .join("interrupts")
             .join(format!("{safe}.flag"))
     }

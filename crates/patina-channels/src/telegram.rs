@@ -4,7 +4,7 @@
 //! - Long polling (no webhook/public IP needed)
 //! - Markdown-to-HTML conversion for rich responses
 //! - Thread/topic support for group chats
-//! - Photo/voice/document handling (downloads to ~/.nanobot/media/)
+//! - Photo/voice/document handling (downloads to ~/.patina/media/)
 //! - Typing indicators while processing
 //! - Proxy support
 //! - /start, /new, /help slash commands
@@ -23,8 +23,8 @@ use teloxide::types::{
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, error, info, warn};
 
-use nanobot_config::TelegramConfig;
-use nanobot_core::bus::{InboundMessage, OutboundMessage};
+use patina_config::TelegramConfig;
+use patina_core::bus::{InboundMessage, OutboundMessage};
 
 use crate::base::Channel;
 use crate::markdown::markdown_to_telegram_html;
@@ -33,7 +33,7 @@ use crate::markdown::markdown_to_telegram_html;
 pub struct TelegramChannel {
     config: TelegramConfig,
     bot: Bot,
-    transcriber: Option<Arc<dyn nanobot_transcribe::Transcriber>>,
+    transcriber: Option<Arc<dyn patina_transcribe::Transcriber>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     typing_tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
 }
@@ -42,7 +42,7 @@ impl TelegramChannel {
     /// Create a new Telegram channel from config.
     pub fn new(
         config: TelegramConfig,
-        transcriber: Option<Arc<dyn nanobot_transcribe::Transcriber>>,
+        transcriber: Option<Arc<dyn patina_transcribe::Transcriber>>,
     ) -> Result<Self> {
         if config.token.is_empty() {
             return Err(anyhow::anyhow!("Telegram bot token not configured"));
@@ -286,7 +286,7 @@ async fn handle_message(
     inbound_tx: mpsc::Sender<InboundMessage>,
     config: TelegramConfig,
     typing_tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
-    transcriber: Option<Arc<dyn nanobot_transcribe::Transcriber>>,
+    transcriber: Option<Arc<dyn patina_transcribe::Transcriber>>,
 ) {
     // Extract user info
     let user = match msg.from {
@@ -662,7 +662,7 @@ mod tests {
     }
 }
 
-/// Download a media file from Telegram to ~/.nanobot/media/.
+/// Download a media file from Telegram to ~/.patina/media/.
 async fn download_media(
     bot: &Bot,
     file_meta: &FileMeta,
@@ -677,7 +677,7 @@ async fn download_media(
 
     let media_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".nanobot")
+        .join(".patina")
         .join("media");
     std::fs::create_dir_all(&media_dir)?;
 

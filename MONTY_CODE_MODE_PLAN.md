@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This document outlines a plan to integrate Monty's code execution engine into nanobot-rs as an alternative execution mode. Instead of the traditional LLM → tool call → execute → repeat loop, the agent will write Python code that Monty executes with access to nanobot's tools as Python functions.
+This document outlines a plan to integrate Monty's code execution engine into patina-bot as an alternative execution mode. Instead of the traditional LLM → tool call → execute → repeat loop, the agent will write Python code that Monty executes with access to patina's tools as Python functions.
 
 **Goal:** Reduce LLM round trips, enable complex control flow (loops, conditionals), and provide a more natural programming interface for multi-step tasks.
 
@@ -124,18 +124,18 @@ pub enum ExecutionMode {
 
 ### Monty Host Function Interface
 
-Monty's external functions are the bridge between sandboxed Python code and nanobot's tools:
+Monty's external functions are the bridge between sandboxed Python code and patina's tools:
 
 ```rust
 /// Host API exposed to Monty-executed code.
-/// Maps nanobot tools to Python-callable functions.
+/// Maps patina tools to Python-callable functions.
 pub struct MontyHostFunctions {
     tools: Arc<ToolRegistry>,
     workspace: PathBuf,
 }
 
 impl MontyHostFunctions {
-    /// Convert nanobot's Tool trait calls to Monty external functions.
+    /// Convert patina's Tool trait calls to Monty external functions.
     pub async fn call_tool(&self, name: &str, params: Value) -> Result<MontyObject> {
         let result_str = self.tools.execute(name, params).await?;
         Ok(MontyObject::String(result_str))
@@ -165,14 +165,14 @@ impl MontyHostFunctions {
 #### 1.1 Add Dependencies
 
 ```toml
-# nanobot-core/Cargo.toml
+# patina-core/Cargo.toml
 [dependencies]
 monty = "0.0.4"
 ```
 
 #### 1.2 Create MontyExecutor
 
-Create `nanobot-core/src/agent/monty_executor.rs`:
+Create `patina-core/src/agent/monty_executor.rs`:
 
 ```rust
 use anyhow::Result;
@@ -229,7 +229,7 @@ impl LimitTracker for MontyLimitTracker {
     }
 }
 
-/// Executes Python code via Monty with access to nanobot tools.
+/// Executes Python code via Monty with access to patina tools.
 pub struct MontyExecutor {
     tools: Arc<ToolRegistry>,
     limits: MontyResourceLimits,
@@ -278,7 +278,7 @@ impl MontyExecutor {
 
 #### 1.3 Add Config Schema
 
-Update `nanobot-config/src/schema.rs`:
+Update `patina-config/src/schema.rs`:
 
 ```rust
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -331,7 +331,7 @@ impl Default for CodeRuntimeConfig {
 
 #### 1.4 Write Unit Tests
 
-Create `nanobot-core/src/agent/monty_executor.rs` tests:
+Create `patina-core/src/agent/monty_executor.rs` tests:
 
 ```rust
 #[cfg(test)]
@@ -377,7 +377,7 @@ mod tests {
 
 ### Phase 2: Host Function Integration (4-5 days)
 
-**Goal:** Enable Monty code to call nanobot tools as Python functions.
+**Goal:** Enable Monty code to call patina tools as Python functions.
 
 #### 2.1 Implement Iterative Execution
 
@@ -463,7 +463,7 @@ fn monty_object_to_string(&self, obj: &MontyObject) -> String {
 
 #### 2.2 Implement Type Conversions
 
-Monty uses `MontyObject` enum, nanobot uses `serde_json::Value`. Need bidirectional conversion:
+Monty uses `MontyObject` enum, patina uses `serde_json::Value`. Need bidirectional conversion:
 
 ```rust
 /// Convert MontyObject to JSON for tool calls.
@@ -525,7 +525,7 @@ fn json_to_monty(val: &serde_json::Value) -> MontyObject {
 
 #### 2.3 Add Type Stubs for Tools
 
-Monty supports type checking with stubs. Create Python type definitions for nanobot tools:
+Monty supports type checking with stubs. Create Python type definitions for patina tools:
 
 ```rust
 impl MontyExecutor {
@@ -633,7 +633,7 @@ write_file("test_upper.txt", upper)
 }
 ```
 
-**Deliverable:** Monty code can call nanobot tools. Type checking works with stubs.
+**Deliverable:** Monty code can call patina tools. Type checking works with stubs.
 
 ---
 
@@ -692,7 +692,7 @@ f"Total: {total} lines"
 
 #### 3.2 Modify ContextBuilder
 
-Update `nanobot-core/src/agent/context.rs`:
+Update `patina-core/src/agent/context.rs`:
 
 ```rust
 impl ContextBuilder {
@@ -763,7 +763,7 @@ impl ContextBuilder {
 
 #### 3.3 Modify AgentLoop::process_message
 
-Update `nanobot-core/src/agent/loop.rs`:
+Update `patina-core/src/agent/loop.rs`:
 
 ```rust
 impl<M: CompletionModel> AgentLoop<M> {
@@ -907,7 +907,7 @@ impl<M: CompletionModel> AgentLoop<M> {
 
 #### 3.4 Wire Up Config
 
-Update `nanobot-cli/src/main.rs`:
+Update `patina-cli/src/main.rs`:
 
 ```rust
 async fn build_agent_loop(config: &Config) -> Result<AgentLoop<impl CompletionModel>> {
@@ -1114,11 +1114,11 @@ impl MontyExecutor {
 
 #### 5.1 Integration Tests
 
-Create `nanobot-core/tests/code_mode_integration.rs`:
+Create `patina-core/tests/code_mode_integration.rs`:
 
 ```rust
-use nanobot_core::agent::AgentLoop;
-use nanobot_config::{Config, ExecutionMode};
+use patina_core::agent::AgentLoop;
+use patina_config::{Config, ExecutionMode};
 
 #[tokio::test]
 async fn test_code_mode_file_operations() {
@@ -1187,7 +1187,7 @@ async fn test_fallback_to_tools_mode() {
 
 #### 5.2 Performance Benchmarks
 
-Create `nanobot-core/benches/code_mode.rs`:
+Create `patina-core/benches/code_mode.rs`:
 
 ```rust
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
@@ -1218,7 +1218,7 @@ criterion_main!(benches);
 
 #### 5.3 Update Documentation
 
-Update `nanobot-rs/README.md`:
+Update `patina-bot/README.md`:
 
 ```markdown
 ## Execution Modes
@@ -1278,14 +1278,14 @@ f"Total: {total} lines"
 **Security:** Code runs in Monty's sandbox with no filesystem, network, or system access unless explicitly granted via allowed functions.
 ```
 
-Create `nanobot-rs/docs/code-mode.md`:
+Create `patina-bot/docs/code-mode.md`:
 
 ```markdown
 # Code Mode Guide
 
 ## Overview
 
-Code mode allows the LLM to write Python code instead of declaring tool calls. The code is executed in a secure Monty sandbox with access to nanobot's tools as Python functions.
+Code mode allows the LLM to write Python code instead of declaring tool calls. The code is executed in a secure Monty sandbox with access to patina's tools as Python functions.
 
 ## When to Use Code Mode
 
@@ -1319,7 +1319,7 @@ Use tool mode when:
 
 #### 5.4 Add Example Config
 
-Create `nanobot-rs/config.code-mode.example.json`:
+Create `patina-bot/config.code-mode.example.json`:
 
 ```json
 {
@@ -1684,7 +1684,7 @@ Limits can track:
 ### Phase 2: Tool Integration
 - [ ] Implement iterative execution
 - [ ] Add MontyObject ↔ JSON conversion
-- [ ] Map nanobot tools to external functions
+- [ ] Map patina tools to external functions
 - [ ] Generate Python type stubs
 - [ ] Write integration tests
 
@@ -1722,7 +1722,7 @@ Limits can track:
 
 ## Conclusion
 
-Monty code mode is a significant architectural addition that aligns with industry trends (Anthropic's programmatic tool calling, Cloudflare's code mode) while maintaining nanobot's local-first philosophy.
+Monty code mode is a significant architectural addition that aligns with industry trends (Anthropic's programmatic tool calling, Cloudflare's code mode) while maintaining patina's local-first philosophy.
 
 **Key advantages:**
 - Reduces LLM API calls by 50-90% for multi-step tasks

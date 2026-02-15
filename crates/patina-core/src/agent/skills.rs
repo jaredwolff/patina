@@ -218,12 +218,17 @@ impl SkillsLoader {
             None => return (true, missing),
         };
 
-        let nanobot_meta: serde_json::Value = match serde_json::from_str(metadata_str) {
+        let skill_meta: serde_json::Value = match serde_json::from_str(metadata_str) {
             Ok(v) => v,
             Err(_) => return (true, missing),
         };
 
-        let requires = match nanobot_meta.get("nanobot").and_then(|n| n.get("requires")) {
+        // Support both "patina" and "nanobot" metadata keys for backward compatibility
+        let requires = match skill_meta
+            .get("patina")
+            .and_then(|n| n.get("requires"))
+            .or_else(|| skill_meta.get("nanobot").and_then(|n| n.get("requires")))
+        {
             Some(r) => r,
             None => return (true, missing),
         };

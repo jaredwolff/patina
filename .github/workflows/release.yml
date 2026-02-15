@@ -14,13 +14,13 @@ jobs:
         include:
           - os: ubuntu-latest
             archive_ext: tar.gz
-            binary_path: target/release/nanobot
+            binary_path: target/release/patina
           - os: macos-latest
             archive_ext: tar.gz
-            binary_path: target/release/nanobot
+            binary_path: target/release/patina
           - os: windows-latest
             archive_ext: zip
-            binary_path: target/release/nanobot.exe
+            binary_path: target/release/patina.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --release -p nanobot-cli
+        run: cargo build --release -p patina-cli
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -36,9 +36,9 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME:-dev}"
-          PKG_DIR="nanobot-rs-${VERSION}-${RUNNER_OS,,}-${RUNNER_ARCH,,}"
+          PKG_DIR="patina-bot-${VERSION}-${RUNNER_OS,,}-${RUNNER_ARCH,,}"
           mkdir -p "$PKG_DIR"
-          cp "${{ matrix.binary_path }}" "$PKG_DIR/nanobot"
+          cp "${{ matrix.binary_path }}" "$PKG_DIR/patina"
           cp README.md "$PKG_DIR/README.md"
           cp config.example.json "$PKG_DIR/config.example.json"
           tar -czf "${PKG_DIR}.tar.gz" "$PKG_DIR"
@@ -49,9 +49,9 @@ jobs:
         shell: pwsh
         run: |
           $Version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
-          $PkgDir = "nanobot-rs-$Version-$env:RUNNER_OS-$env:RUNNER_ARCH"
+          $PkgDir = "patina-bot-$Version-$env:RUNNER_OS-$env:RUNNER_ARCH"
           New-Item -ItemType Directory -Path $PkgDir | Out-Null
-          Copy-Item "${{ matrix.binary_path }}" "$PkgDir/nanobot.exe"
+          Copy-Item "${{ matrix.binary_path }}" "$PkgDir/patina.exe"
           Copy-Item "README.md" "$PkgDir/README.md"
           Copy-Item "config.example.json" "$PkgDir/config.example.json"
           Compress-Archive -Path "$PkgDir/*" -DestinationPath "$PkgDir.zip" -Force
@@ -61,7 +61,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nanobot-rs-${{ runner.os }}-${{ runner.arch }}
+          name: patina-bot-${{ runner.os }}-${{ runner.arch }}
           path: |
             *.tar.gz
             *.zip

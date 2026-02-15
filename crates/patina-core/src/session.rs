@@ -109,7 +109,7 @@ impl Session {
 }
 
 /// Manages multiple sessions with JSONL persistence.
-/// Compatible with Python nanobot's session format.
+/// Compatible with Python nanobot's session format (backward compat).
 pub struct SessionManager {
     sessions_dir: PathBuf,
     pub sessions: HashMap<String, Session>,
