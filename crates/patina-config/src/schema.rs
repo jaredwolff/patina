@@ -22,6 +22,7 @@ pub struct AgentsConfig {
 #[serde(rename_all = "camelCase", default)]
 pub struct AgentDefaults {
     pub workspace: String,
+    pub provider: String,
     pub model: String,
     pub max_tokens: u32,
     pub temperature: f32,
@@ -33,7 +34,8 @@ impl Default for AgentDefaults {
     fn default() -> Self {
         Self {
             workspace: "~/.patina/workspace".into(),
-            model: "gpt-oss-20b-GGUF".into(),
+            provider: String::new(),
+            model: String::new(),
             max_tokens: 8192,
             temperature: 0.7,
             max_tool_iterations: 20,

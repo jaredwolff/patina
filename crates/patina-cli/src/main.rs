@@ -298,154 +298,157 @@ fn resolve_builtin_skills_dir() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_dir())
 }
 
-/// Create a completion model from config, auto-detecting provider by model name.
+/// Create a completion model from config using the explicitly configured provider.
 ///
-/// Priority:
-/// 1. OpenAI with custom apiBase (covers llama.cpp, vLLM, any OpenAI-compatible)
-/// 2. Auto-detect by model name prefix (claude-* → Anthropic, gpt-* → OpenAI, etc.)
-/// 3. Explicitly configured providers (check for API keys)
-/// 4. Ollama (local-first fallback)
+/// Requires `agents.defaults.provider` and `agents.defaults.model` to be set.
+/// Errors clearly if provider is missing, unknown, or has no API key.
 #[allow(deprecated)]
 fn create_model(config: &patina_config::Config) -> Result<CompletionModelHandle<'static>> {
+    let provider = &config.agents.defaults.provider;
     let model_name = &config.agents.defaults.model;
-    let lower = model_name.to_lowercase();
 
-    // 1. If openai provider has a custom apiBase, use it (OpenAI-compatible server)
-    if let Some(ref openai_cfg) = config.providers.openai {
-        if openai_cfg.api_base.as_ref().is_some_and(|b| !b.is_empty()) {
-            let api_key = openai_cfg.api_key.as_deref().unwrap_or("not-needed");
-            let mut builder = openai::CompletionsClient::builder().api_key(api_key);
-            if let Some(ref base) = openai_cfg.api_base {
-                builder = builder.base_url(base);
-            }
-            let client: openai::CompletionsClient = builder
-                .build()
-                .map_err(|e| anyhow::anyhow!("Failed to create OpenAI-compatible client: {e}"))?;
-            let model = client.completion_model(model_name);
-            tracing::info!(
-                "Using OpenAI-compatible provider (base: {})",
-                openai_cfg.api_base.as_deref().unwrap_or("default")
-            );
-            return Ok(CompletionModelHandle::new(Arc::new(model)));
-        }
+    if provider.is_empty() {
+        anyhow::bail!(
+            "No provider configured. Set agents.defaults.provider in config.json.\n\
+             Valid providers: anthropic, openai, ollama, openrouter, deepseek, groq, gemini"
+        );
     }
 
-    // 1b. Gateway auto-detection by API key prefix
-    if let Some(key) = resolve_api_key(&config.providers.openrouter, "OPENROUTER_API_KEY") {
-        if key.starts_with("sk-or-") {
-            let client: openrouter::Client = openrouter::Client::new(&key)
-                .map_err(|e| anyhow::anyhow!("Failed to create OpenRouter client: {e}"))?;
-            let model = client.completion_model(model_name);
-            tracing::info!("Using OpenRouter provider (detected by API key prefix)");
-            return Ok(CompletionModelHandle::new(Arc::new(model)));
-        }
+    if model_name.is_empty() {
+        anyhow::bail!("No model configured. Set agents.defaults.model in config.json.");
     }
 
-    // 2. Auto-detect provider by model name prefix
-    // Anthropic: claude-*
-    if lower.starts_with("claude-") {
-        if let Some(key) = resolve_api_key(&config.providers.anthropic, "ANTHROPIC_API_KEY") {
+    match provider.as_str() {
+        "anthropic" => {
+            let key = resolve_api_key(&config.providers.anthropic, "ANTHROPIC_API_KEY")
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Anthropic provider selected but no API key found. \
+                     Set providers.anthropic.apiKey in config.json or ANTHROPIC_API_KEY env var."
+                    )
+                })?;
             let client: anthropic::Client = anthropic::Client::builder()
                 .api_key(&key)
                 .build()
                 .map_err(|e| anyhow::anyhow!("Failed to create Anthropic client: {e}"))?;
             let model = client.completion_model(model_name);
-            tracing::info!("Using Anthropic provider");
-            return Ok(CompletionModelHandle::new(Arc::new(model)));
+            tracing::info!("Using Anthropic provider with model '{model_name}'");
+            Ok(CompletionModelHandle::new(Arc::new(model)))
         }
-    }
 
-    // OpenAI: gpt-*, o1-*, o3-*, o4-*
-    if lower.starts_with("gpt-")
-        || lower.starts_with("o1-")
-        || lower.starts_with("o3-")
-        || lower.starts_with("o4-")
-    {
-        if let Some(key) = resolve_api_key(&config.providers.openai, "OPENAI_API_KEY") {
-            let client: openai::CompletionsClient = openai::CompletionsClient::builder()
-                .api_key(&key)
+        "openai" => {
+            let key =
+                resolve_api_key(&config.providers.openai, "OPENAI_API_KEY").ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "OpenAI provider selected but no API key found. \
+                     Set providers.openai.apiKey in config.json or OPENAI_API_KEY env var."
+                    )
+                })?;
+            let mut builder = openai::CompletionsClient::builder().api_key(&key);
+            if let Some(ref base) = config
+                .providers
+                .openai
+                .as_ref()
+                .and_then(|c| c.api_base.clone())
+                .filter(|b| !b.is_empty())
+            {
+                builder = builder.base_url(base);
+                tracing::info!("Using OpenAI provider with custom base: {base}");
+            }
+            let client: openai::CompletionsClient = builder
                 .build()
                 .map_err(|e| anyhow::anyhow!("Failed to create OpenAI client: {e}"))?;
             let model = client.completion_model(model_name);
-            tracing::info!("Using OpenAI provider");
-            return Ok(CompletionModelHandle::new(Arc::new(model)));
+            tracing::info!("Using OpenAI provider with model '{model_name}'");
+            Ok(CompletionModelHandle::new(Arc::new(model)))
         }
-    }
 
-    // DeepSeek: deepseek-*
-    if lower.starts_with("deepseek-") || lower.starts_with("deepseek_") {
-        if let Some(key) = resolve_api_key(&config.providers.deepseek, "DEEPSEEK_API_KEY") {
-            let client: deepseek::Client = deepseek::Client::new(&key)
-                .map_err(|e| anyhow::anyhow!("Failed to create DeepSeek client: {e}"))?;
+        "ollama" => {
+            let mut builder = ollama::Client::builder().api_key(Nothing);
+            if let Some(ref base) = config
+                .providers
+                .ollama
+                .as_ref()
+                .and_then(|c| c.api_base.clone())
+                .filter(|b| !b.is_empty())
+            {
+                builder = builder.base_url(base);
+            }
+            let client: ollama::Client = builder
+                .build()
+                .map_err(|e| anyhow::anyhow!("Failed to create Ollama client: {e}"))?;
             let model = client.completion_model(model_name);
-            tracing::info!("Using DeepSeek provider");
-            return Ok(CompletionModelHandle::new(Arc::new(model)));
+            tracing::info!("Using Ollama provider with model '{model_name}'");
+            Ok(CompletionModelHandle::new(Arc::new(model)))
         }
-    }
 
-    // Gemini: gemini-*
-    if lower.starts_with("gemini-") {
-        if let Some(key) = resolve_api_key(&config.providers.gemini, "GEMINI_API_KEY") {
-            let client: gemini::Client = gemini::Client::new(key)
-                .map_err(|e| anyhow::anyhow!("Failed to create Gemini client: {e}"))?;
-            let model = client.completion_model(model_name);
-            tracing::info!("Using Gemini provider");
-            return Ok(CompletionModelHandle::new(Arc::new(model)));
-        }
-    }
-
-    // OpenRouter: model names containing "/" (e.g. "meta-llama/llama-3-70b")
-    if lower.contains('/') {
-        if let Some(key) = resolve_api_key(&config.providers.openrouter, "OPENROUTER_API_KEY") {
+        "openrouter" => {
+            let key = resolve_api_key(&config.providers.openrouter, "OPENROUTER_API_KEY")
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "OpenRouter provider selected but no API key found. \
+                     Set providers.openrouter.apiKey in config.json or OPENROUTER_API_KEY env var."
+                    )
+                })?;
             let client: openrouter::Client = openrouter::Client::new(&key)
                 .map_err(|e| anyhow::anyhow!("Failed to create OpenRouter client: {e}"))?;
             let model = client.completion_model(model_name);
-            tracing::info!("Using OpenRouter provider");
-            return Ok(CompletionModelHandle::new(Arc::new(model)));
+            tracing::info!("Using OpenRouter provider with model '{model_name}'");
+            Ok(CompletionModelHandle::new(Arc::new(model)))
         }
-    }
 
-    // Groq: explicit config (groq models don't have a consistent prefix)
-    if let Some(key) = resolve_api_key(&config.providers.groq, "GROQ_API_KEY") {
-        if lower.starts_with("groq-")
-            || lower.contains("llama")
-            || lower.contains("mixtral")
-            || config
-                .providers
-                .groq
-                .as_ref()
-                .is_some_and(|g| g.api_key.as_ref().is_some_and(|k| !k.is_empty()))
-        {
+        "deepseek" => {
+            let key = resolve_api_key(&config.providers.deepseek, "DEEPSEEK_API_KEY").ok_or_else(
+                || {
+                    anyhow::anyhow!(
+                        "DeepSeek provider selected but no API key found. \
+                     Set providers.deepseek.apiKey in config.json or DEEPSEEK_API_KEY env var."
+                    )
+                },
+            )?;
+            let client: deepseek::Client = deepseek::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("Failed to create DeepSeek client: {e}"))?;
+            let model = client.completion_model(model_name);
+            tracing::info!("Using DeepSeek provider with model '{model_name}'");
+            Ok(CompletionModelHandle::new(Arc::new(model)))
+        }
+
+        "groq" => {
+            let key = resolve_api_key(&config.providers.groq, "GROQ_API_KEY").ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Groq provider selected but no API key found. \
+                     Set providers.groq.apiKey in config.json or GROQ_API_KEY env var."
+                )
+            })?;
             let client: groq::Client = groq::Client::new(&key)
                 .map_err(|e| anyhow::anyhow!("Failed to create Groq client: {e}"))?;
             let model = client.completion_model(model_name);
-            tracing::info!("Using Groq provider");
-            return Ok(CompletionModelHandle::new(Arc::new(model)));
+            tracing::info!("Using Groq provider with model '{model_name}'");
+            Ok(CompletionModelHandle::new(Arc::new(model)))
+        }
+
+        "gemini" => {
+            let key =
+                resolve_api_key(&config.providers.gemini, "GEMINI_API_KEY").ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Gemini provider selected but no API key found. \
+                     Set providers.gemini.apiKey in config.json or GEMINI_API_KEY env var."
+                    )
+                })?;
+            let client: gemini::Client = gemini::Client::new(key)
+                .map_err(|e| anyhow::anyhow!("Failed to create Gemini client: {e}"))?;
+            let model = client.completion_model(model_name);
+            tracing::info!("Using Gemini provider with model '{model_name}'");
+            Ok(CompletionModelHandle::new(Arc::new(model)))
+        }
+
+        other => {
+            anyhow::bail!(
+                "Unknown provider '{other}'. \
+                 Valid providers: anthropic, openai, ollama, openrouter, deepseek, groq, gemini"
+            );
         }
     }
-
-    // 3. Fallback: if any provider has an API key set, try it via OpenRouter
-    if let Some(key) = resolve_api_key(&config.providers.openrouter, "OPENROUTER_API_KEY") {
-        let client: openrouter::Client = openrouter::Client::new(&key)
-            .map_err(|e| anyhow::anyhow!("Failed to create OpenRouter client: {e}"))?;
-        let model = client.completion_model(model_name);
-        tracing::info!("Using OpenRouter provider (fallback)");
-        return Ok(CompletionModelHandle::new(Arc::new(model)));
-    }
-
-    // 4. Ollama (local-first default)
-    let mut builder = ollama::Client::builder().api_key(Nothing);
-    if let Some(ref ollama_cfg) = config.providers.ollama {
-        if let Some(ref base) = ollama_cfg.api_base {
-            builder = builder.base_url(base);
-        }
-    }
-    let client: ollama::Client = builder
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to create Ollama client: {e}"))?;
-    let model = client.completion_model(model_name);
-    tracing::info!("Using Ollama provider (local default)");
-    Ok(CompletionModelHandle::new(Arc::new(model)))
 }
 
 /// Holds context-aware tools that need set_context() called before each message.
@@ -1344,18 +1347,22 @@ fn run_status(config_path: &Path) -> Result<()> {
     }
 
     // Model
-    println!("  Model:     {}", config.agents.defaults.model);
-    println!();
-
-    // Providers
-    println!("  Providers:");
-    print_provider_status("  Ollama", &config.providers.ollama);
-    print_provider_status("  OpenAI", &config.providers.openai);
-    print_provider_status("  Anthropic", &config.providers.anthropic);
-    print_provider_status("  OpenRouter", &config.providers.openrouter);
-    print_provider_status("  DeepSeek", &config.providers.deepseek);
-    print_provider_status("  Groq", &config.providers.groq);
-    print_provider_status("  Gemini", &config.providers.gemini);
+    println!(
+        "  Provider:  {}",
+        if config.agents.defaults.provider.is_empty() {
+            "(not set)"
+        } else {
+            &config.agents.defaults.provider
+        }
+    );
+    println!(
+        "  Model:     {}",
+        if config.agents.defaults.model.is_empty() {
+            "(not set)"
+        } else {
+            &config.agents.defaults.model
+        }
+    );
     println!();
 
     // Tools
@@ -1433,24 +1440,6 @@ fn run_status(config_path: &Path) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn print_provider_status(label: &str, provider: &Option<patina_config::ProviderConfig>) {
-    if let Some(p) = provider {
-        let has_key = p.api_key.as_ref().is_some_and(|k| !k.is_empty());
-        let has_base = p.api_base.as_ref().is_some_and(|b| !b.is_empty());
-        if has_key && has_base {
-            let base = p.api_base.as_deref().unwrap_or("");
-            println!("  {label}: key set, base: {base}");
-        } else if has_key {
-            println!("  {label}: key set");
-        } else if has_base {
-            let base = p.api_base.as_deref().unwrap_or("");
-            println!("  {label}: base: {base}");
-        } else {
-            println!("  {label}: configured (empty)");
-        }
-    }
 }
 
 /// Handle cron CLI subcommands.
