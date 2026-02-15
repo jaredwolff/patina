@@ -239,7 +239,8 @@ impl SubagentManager {
         session_key: &str,
         task: &str,
     ) -> Result<String> {
-        agent_loop.process_message(session_key, task, None).await
+        let (response, _) = agent_loop.process_message(session_key, task, None).await?;
+        Ok(response)
     }
 }
 

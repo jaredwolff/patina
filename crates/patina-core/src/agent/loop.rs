@@ -91,15 +91,16 @@ impl<M: CompletionModel> AgentLoop<M> {
         }
     }
 
-    /// Process a single user message and return the assistant's response.
+    /// Process a single user message and return the assistant's response
+    /// plus a flag indicating whether memory consolidation is needed.
     pub async fn process_message(
         &mut self,
         session_key: &str,
         user_message: &str,
         media: Option<&[String]>,
-    ) -> Result<String> {
+    ) -> Result<(String, bool)> {
         if Self::consume_interrupt(session_key) {
-            return Ok("Interrupted before processing.".to_string());
+            return Ok(("Interrupted before processing.".to_string(), false));
         }
 
         let session = self.sessions.get_or_create_checked(session_key)?;
@@ -222,22 +223,20 @@ impl<M: CompletionModel> AgentLoop<M> {
         session.add_message_full("assistant", &response, tools_used, reasoning);
         self.sessions.save(session_key)?;
 
-        // Check if memory consolidation is needed
+        // Check if memory consolidation is needed (caller should run it
+        // *after* delivering the response so the user isn't blocked).
         let needs_consolidation = {
             let session = match self.sessions.get_or_create_checked(session_key) {
                 Ok(s) => s,
                 Err(e) => {
                     warn!("Failed to reload session '{session_key}' for consolidation check: {e}");
-                    return Ok(response);
+                    return Ok((response, false));
                 }
             };
             session.messages.len() > self.memory_window
         };
-        if needs_consolidation {
-            self.consolidate_memory(session_key, false).await;
-        }
 
-        Ok(response)
+        Ok((response, needs_consolidation))
     }
 
     /// Consolidate old messages into MEMORY.md/HISTORY.md via LLM summarization.
@@ -399,6 +398,8 @@ Respond with ONLY valid JSON, no markdown fences."#
         let mut tools_used = Vec::new();
         let mut current_prompt = prompt;
         let mut accumulated_reasoning = String::new();
+        let mut consecutive_errors: usize = 0;
+        const MAX_CONSECUTIVE_ERRORS: usize = 3;
 
         for iteration in 0..self.max_iterations {
             if Self::consume_interrupt(session_key) {
@@ -520,6 +521,8 @@ Respond with ONLY valid JSON, no markdown fences."#
 
             // Execute each tool call
             let mut tool_results: Vec<UserContent> = Vec::new();
+            let mut iteration_has_success = false;
+            let mut last_error = String::new();
             for tc in &tool_calls_to_execute {
                 if Self::consume_interrupt(session_key) {
                     return Ok((
@@ -550,8 +553,19 @@ Respond with ONLY valid JSON, no markdown fences."#
                 );
 
                 let result = match self.tools.execute(tool_name, tool_args.clone()).await {
-                    Ok(r) => r,
-                    Err(e) => format!("Error executing {tool_name}: {e}"),
+                    Ok(r) => {
+                        if r.starts_with("Error executing ") {
+                            last_error.clone_from(&r);
+                        } else {
+                            iteration_has_success = true;
+                        }
+                        r
+                    }
+                    Err(e) => {
+                        let err = format!("Error executing {tool_name}: {e}");
+                        last_error.clone_from(&err);
+                        err
+                    }
                 };
 
                 let result_preview = if result.len() > 200 {
@@ -566,6 +580,32 @@ Respond with ONLY valid JSON, no markdown fences."#
                     call_id: tc.call_id.clone(),
                     content: OneOrMany::one(ToolResultContent::Text(Text { text: result })),
                 }));
+            }
+
+            // Circuit breaker: bail if all tool calls have failed for too many
+            // consecutive iterations (e.g. model keeps generating malformed params).
+            if iteration_has_success {
+                consecutive_errors = 0;
+            } else {
+                consecutive_errors += 1;
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                    warn!(
+                        "Circuit breaker: {consecutive_errors} consecutive iterations with all tool calls failing"
+                    );
+                    let reasoning = if accumulated_reasoning.is_empty() {
+                        None
+                    } else {
+                        Some(accumulated_reasoning)
+                    };
+                    return Ok((
+                        format!(
+                            "I'm having trouble using a tool correctly and had to stop retrying. \
+                             Last error: {last_error}. Could you try rephrasing your request?"
+                        ),
+                        tools_used,
+                        reasoning,
+                    ));
+                }
             }
 
             // Add tool results as a user message, plus a reflection prompt

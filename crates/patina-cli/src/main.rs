@@ -711,7 +711,7 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                         }
                     };
                     match result {
-                        Some(Ok(response)) => {
+                        Some(Ok((response, needs_consolidation))) => {
                             if let Err(e) = bus.outbound_tx.send(OutboundMessage {
                                 channel: origin_channel,
                                 chat_id: origin_chat_id,
@@ -722,6 +722,9 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                                 tracing::warn!(
                                     "Failed to publish outbound system response to bus: {e}"
                                 );
+                            }
+                            if needs_consolidation {
+                                agent_loop.consolidate_memory(&session_key, false).await;
                             }
                         }
                         Some(Err(e)) => {
@@ -835,7 +838,7 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                     }
                 };
                 match result {
-                    Some(Ok(response)) => {
+                    Some(Ok((response, needs_consolidation))) => {
                         if let Err(e) = bus.outbound_tx.send(OutboundMessage {
                             channel: msg.channel.clone(),
                             chat_id: msg.chat_id.clone(),
@@ -844,6 +847,9 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                             metadata: msg.metadata.clone(),
                         }) {
                             tracing::warn!("Failed to publish outbound response to bus: {e}");
+                        }
+                        if needs_consolidation {
+                            agent_loop.consolidate_memory(&session_key, false).await;
                         }
                     }
                     Some(Err(e)) => {
@@ -890,10 +896,13 @@ async fn run_single_message(
     session_key: &str,
     message: &str,
 ) -> Result<()> {
-    let response = agent_loop
+    let (response, needs_consolidation) = agent_loop
         .process_message(session_key, message, None)
         .await?;
     render_markdown(&response);
+    if needs_consolidation {
+        agent_loop.consolidate_memory(session_key, false).await;
+    }
     Ok(())
 }
 
@@ -1006,10 +1015,13 @@ async fn run_interactive(
 
                 // Process message
                 match agent_loop.process_message(session_key, input, None).await {
-                    Ok(response) => {
+                    Ok((response, needs_consolidation)) => {
                         println!();
                         render_markdown(&response);
                         println!();
+                        if needs_consolidation {
+                            agent_loop.consolidate_memory(session_key, false).await;
+                        }
                     }
                     Err(e) => {
                         eprintln!("Error: {e}");
