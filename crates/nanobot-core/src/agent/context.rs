@@ -14,6 +14,8 @@ pub struct ContextBuilder {
     workspace: PathBuf,
     memory: MemoryStore,
     skills: SkillsLoader,
+    /// Optional override for the system prompt (used by subagents).
+    preamble_override: Option<String>,
 }
 
 impl ContextBuilder {
@@ -22,6 +24,17 @@ impl ContextBuilder {
             workspace: workspace.to_path_buf(),
             memory: MemoryStore::new(workspace),
             skills: SkillsLoader::new(workspace, builtin_skills),
+            preamble_override: None,
+        }
+    }
+
+    /// Create a ContextBuilder with a custom preamble (for subagents).
+    pub fn with_preamble(workspace: &Path, preamble: String) -> Self {
+        Self {
+            workspace: workspace.to_path_buf(),
+            memory: MemoryStore::new(workspace),
+            skills: SkillsLoader::new(workspace, None),
+            preamble_override: Some(preamble),
         }
     }
 
@@ -32,6 +45,11 @@ impl ContextBuilder {
 
     /// Build the full system prompt from identity, bootstrap files, skills, and memory.
     pub fn build_system_prompt(&self) -> Result<String> {
+        // If a preamble override is set, use it directly (for subagents)
+        if let Some(ref preamble) = self.preamble_override {
+            return Ok(preamble.clone());
+        }
+
         let mut parts = Vec::new();
 
         // Core identity

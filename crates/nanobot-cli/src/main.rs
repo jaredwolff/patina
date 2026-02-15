@@ -4,17 +4,24 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use nanobot_config::{find_config_path, load_config, resolve_workspace};
+use nanobot_core::agent::subagent::SubagentManager;
 use nanobot_core::agent::{AgentLoop, ContextBuilder};
+use nanobot_core::bus::MessageBus;
+use nanobot_core::cron::CronService;
 use nanobot_core::session::SessionManager;
+use nanobot_core::tools::cron::CronTool;
 use nanobot_core::tools::filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
+use nanobot_core::tools::message::MessageTool;
 use nanobot_core::tools::shell::ExecTool;
+use nanobot_core::tools::spawn::SpawnTool;
 use nanobot_core::tools::web::{WebFetchTool, WebSearchTool};
 use nanobot_core::tools::ToolRegistry;
 use rig::client::completion::CompletionModelHandle;
 use rig::client::{CompletionClient, Nothing};
-use rig::providers::{ollama, openai};
+use rig::providers::{anthropic, deepseek, gemini, groq, ollama, openai, openrouter};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use tokio::sync::Mutex;
 
 #[derive(Parser)]
 #[command(name = "nanobot", about = "Lightweight AI agent", version)]
@@ -78,17 +85,50 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Agent { message, session } => {
-            let agent_loop = build_agent_loop(&config, &workspace)?;
+            let (agent_loop, context_tools, _cron_service) = build_agent_loop(&config, &workspace)?;
 
             if let Some(msg) = message {
+                // Set context for the CLI session
+                let parts: Vec<&str> = session.splitn(2, ':').collect();
+                let (channel, chat_id) = if parts.len() == 2 {
+                    (parts[0], parts[1])
+                } else {
+                    ("cli", session.as_str())
+                };
+                context_tools.set_context(channel, chat_id).await;
                 run_single_message(agent_loop, &session, &msg).await?;
             } else {
-                run_interactive(agent_loop, &session).await?;
+                run_interactive(agent_loop, context_tools, &session).await?;
             }
         }
         Commands::Serve => {
             tracing::info!("Starting gateway...");
-            eprintln!("Gateway mode not yet implemented. Use `nanobot agent` for CLI mode.");
+            // Start cron service in gateway mode
+            let (_agent_loop, _context_tools, cron_service) =
+                build_agent_loop(&config, &workspace)?;
+
+            {
+                let mut cron = cron_service.lock().await;
+                if let Err(e) = cron.start().await {
+                    tracing::warn!("Failed to start cron service: {e}");
+                }
+            }
+
+            // Start heartbeat if enabled
+            if config.heartbeat.enabled {
+                let bus = nanobot_core::bus::MessageBus::new(128);
+                let mut heartbeat = nanobot_core::heartbeat::HeartbeatService::new(
+                    workspace.clone(),
+                    bus.inbound_tx,
+                    Some(config.heartbeat.interval_secs),
+                );
+                heartbeat.start();
+                tracing::info!("Heartbeat service started");
+            }
+
+            eprintln!("Gateway mode not yet fully implemented. Channels pending Phase 3.");
+            eprintln!("Cron and heartbeat services are running. Press Ctrl-C to stop.");
+            tokio::signal::ctrl_c().await?;
         }
         _ => unreachable!(),
     }
@@ -96,16 +136,33 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Create a completion model from config, selecting provider based on what's configured.
+/// Resolve an API key from config, falling back to an environment variable.
+fn resolve_api_key(
+    provider_cfg: &Option<nanobot_config::ProviderConfig>,
+    env_var: &str,
+) -> Option<String> {
+    provider_cfg
+        .as_ref()
+        .and_then(|c| c.api_key.clone())
+        .filter(|k| !k.is_empty())
+        .or_else(|| std::env::var(env_var).ok().filter(|k| !k.is_empty()))
+}
+
+/// Create a completion model from config, auto-detecting provider by model name.
 ///
-/// Priority: openai (covers llama.cpp, vLLM, any OpenAI-compatible) -> ollama -> ollama default
+/// Priority:
+/// 1. OpenAI with custom apiBase (covers llama.cpp, vLLM, any OpenAI-compatible)
+/// 2. Auto-detect by model name prefix (claude-* → Anthropic, gpt-* → OpenAI, etc.)
+/// 3. Explicitly configured providers (check for API keys)
+/// 4. Ollama (local-first fallback)
 #[allow(deprecated)]
 fn create_model(config: &nanobot_config::Config) -> Result<CompletionModelHandle<'static>> {
     let model_name = &config.agents.defaults.model;
+    let lower = model_name.to_lowercase();
 
-    // 1. If openai provider is configured with an apiBase, use it (OpenAI-compatible)
+    // 1. If openai provider has a custom apiBase, use it (OpenAI-compatible server)
     if let Some(ref openai_cfg) = config.providers.openai {
-        if openai_cfg.api_base.is_some() || openai_cfg.api_key.is_some() {
+        if openai_cfg.api_base.as_ref().is_some_and(|b| !b.is_empty()) {
             let api_key = openai_cfg.api_key.as_deref().unwrap_or("not-needed");
             let mut builder = openai::CompletionsClient::builder().api_key(api_key);
             if let Some(ref base) = openai_cfg.api_base {
@@ -123,7 +180,99 @@ fn create_model(config: &nanobot_config::Config) -> Result<CompletionModelHandle
         }
     }
 
-    // 2. Ollama (local-first default)
+    // 2. Auto-detect provider by model name prefix
+    // Anthropic: claude-*
+    if lower.starts_with("claude-") {
+        if let Some(key) = resolve_api_key(&config.providers.anthropic, "ANTHROPIC_API_KEY") {
+            let client: anthropic::Client = anthropic::Client::builder()
+                .api_key(&key)
+                .build()
+                .map_err(|e| anyhow::anyhow!("Failed to create Anthropic client: {e}"))?;
+            let model = client.completion_model(model_name);
+            tracing::info!("Using Anthropic provider");
+            return Ok(CompletionModelHandle::new(Arc::new(model)));
+        }
+    }
+
+    // OpenAI: gpt-*, o1-*, o3-*, o4-*
+    if lower.starts_with("gpt-")
+        || lower.starts_with("o1-")
+        || lower.starts_with("o3-")
+        || lower.starts_with("o4-")
+    {
+        if let Some(key) = resolve_api_key(&config.providers.openai, "OPENAI_API_KEY") {
+            let client: openai::CompletionsClient = openai::CompletionsClient::builder()
+                .api_key(&key)
+                .build()
+                .map_err(|e| anyhow::anyhow!("Failed to create OpenAI client: {e}"))?;
+            let model = client.completion_model(model_name);
+            tracing::info!("Using OpenAI provider");
+            return Ok(CompletionModelHandle::new(Arc::new(model)));
+        }
+    }
+
+    // DeepSeek: deepseek-*
+    if lower.starts_with("deepseek-") || lower.starts_with("deepseek_") {
+        if let Some(key) = resolve_api_key(&config.providers.deepseek, "DEEPSEEK_API_KEY") {
+            let client: deepseek::Client = deepseek::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("Failed to create DeepSeek client: {e}"))?;
+            let model = client.completion_model(model_name);
+            tracing::info!("Using DeepSeek provider");
+            return Ok(CompletionModelHandle::new(Arc::new(model)));
+        }
+    }
+
+    // Gemini: gemini-*
+    if lower.starts_with("gemini-") {
+        if let Some(key) = resolve_api_key(&config.providers.gemini, "GEMINI_API_KEY") {
+            let client: gemini::Client = gemini::Client::new(key)
+                .map_err(|e| anyhow::anyhow!("Failed to create Gemini client: {e}"))?;
+            let model = client.completion_model(model_name);
+            tracing::info!("Using Gemini provider");
+            return Ok(CompletionModelHandle::new(Arc::new(model)));
+        }
+    }
+
+    // OpenRouter: model names containing "/" (e.g. "meta-llama/llama-3-70b")
+    if lower.contains('/') {
+        if let Some(key) = resolve_api_key(&config.providers.openrouter, "OPENROUTER_API_KEY") {
+            let client: openrouter::Client = openrouter::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("Failed to create OpenRouter client: {e}"))?;
+            let model = client.completion_model(model_name);
+            tracing::info!("Using OpenRouter provider");
+            return Ok(CompletionModelHandle::new(Arc::new(model)));
+        }
+    }
+
+    // Groq: explicit config (groq models don't have a consistent prefix)
+    if let Some(key) = resolve_api_key(&config.providers.groq, "GROQ_API_KEY") {
+        if lower.starts_with("groq-")
+            || lower.contains("llama")
+            || lower.contains("mixtral")
+            || config
+                .providers
+                .groq
+                .as_ref()
+                .is_some_and(|g| g.api_key.as_ref().is_some_and(|k| !k.is_empty()))
+        {
+            let client: groq::Client = groq::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("Failed to create Groq client: {e}"))?;
+            let model = client.completion_model(model_name);
+            tracing::info!("Using Groq provider");
+            return Ok(CompletionModelHandle::new(Arc::new(model)));
+        }
+    }
+
+    // 3. Fallback: if any provider has an API key set, try it via OpenRouter
+    if let Some(key) = resolve_api_key(&config.providers.openrouter, "OPENROUTER_API_KEY") {
+        let client: openrouter::Client = openrouter::Client::new(&key)
+            .map_err(|e| anyhow::anyhow!("Failed to create OpenRouter client: {e}"))?;
+        let model = client.completion_model(model_name);
+        tracing::info!("Using OpenRouter provider (fallback)");
+        return Ok(CompletionModelHandle::new(Arc::new(model)));
+    }
+
+    // 4. Ollama (local-first default)
     let mut builder = ollama::Client::builder().api_key(Nothing);
     if let Some(ref ollama_cfg) = config.providers.ollama {
         if let Some(ref base) = ollama_cfg.api_base {
@@ -134,17 +283,40 @@ fn create_model(config: &nanobot_config::Config) -> Result<CompletionModelHandle
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to create Ollama client: {e}"))?;
     let model = client.completion_model(model_name);
-    tracing::info!("Using Ollama provider");
+    tracing::info!("Using Ollama provider (local default)");
     Ok(CompletionModelHandle::new(Arc::new(model)))
+}
+
+/// Holds context-aware tools that need set_context() called before each message.
+struct ContextTools {
+    message_tool: Arc<MessageTool>,
+    spawn_tool: Arc<SpawnTool>,
+    cron_tool: Arc<CronTool>,
+}
+
+impl ContextTools {
+    /// Update all context-aware tools with the current channel/chat_id.
+    async fn set_context(&self, channel: &str, chat_id: &str) {
+        self.message_tool.set_context(channel, chat_id).await;
+        self.spawn_tool.set_context(channel, chat_id).await;
+        self.cron_tool.set_context(channel, chat_id).await;
+    }
 }
 
 #[allow(deprecated)]
 fn build_agent_loop(
     config: &nanobot_config::Config,
     workspace: &Path,
-) -> Result<AgentLoop<CompletionModelHandle<'static>>> {
+) -> Result<(
+    AgentLoop<CompletionModelHandle<'static>>,
+    ContextTools,
+    Arc<Mutex<CronService>>,
+)> {
     let defaults = &config.agents.defaults;
     let model = create_model(config)?;
+
+    // Message bus
+    let bus = MessageBus::new(128);
 
     // Sessions directory
     let sessions_dir = dirs::home_dir()
@@ -185,7 +357,40 @@ fn build_agent_loop(
     )));
     tools.register(Box::new(WebFetchTool::new(50_000)));
 
-    Ok(AgentLoop {
+    // Message tool
+    let message_tool = Arc::new(MessageTool::new(bus.outbound_tx.clone()));
+    tools.register(Box::new(ArcToolWrapper(message_tool.clone())));
+
+    // Subagent manager + spawn tool
+    let subagent_manager = Arc::new(SubagentManager::new(
+        model.clone(),
+        workspace.to_path_buf(),
+        bus.inbound_tx.clone(),
+        config.clone(),
+    ));
+    let spawn_tool = Arc::new(SpawnTool::new(subagent_manager));
+    tools.register(Box::new(ArcToolWrapper(spawn_tool.clone())));
+
+    // Cron service + cron tool
+    let cron_store_path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".nanobot")
+        .join("cron")
+        .join("jobs.json");
+    let cron_service = Arc::new(Mutex::new(CronService::new(
+        cron_store_path,
+        bus.inbound_tx.clone(),
+    )));
+    let cron_tool = Arc::new(CronTool::new(cron_service.clone()));
+    tools.register(Box::new(ArcToolWrapper(cron_tool.clone())));
+
+    let context_tools = ContextTools {
+        message_tool,
+        spawn_tool,
+        cron_tool,
+    };
+
+    let agent_loop = AgentLoop {
         model,
         sessions,
         context,
@@ -194,7 +399,28 @@ fn build_agent_loop(
         temperature: defaults.temperature as f64,
         max_tokens: defaults.max_tokens as u64,
         memory_window: defaults.memory_window,
-    })
+    };
+
+    Ok((agent_loop, context_tools, cron_service))
+}
+
+/// Wrapper to register an `Arc<T: Tool>` in the ToolRegistry (which expects `Box<dyn Tool>`).
+struct ArcToolWrapper<T: nanobot_core::tools::Tool>(Arc<T>);
+
+#[async_trait::async_trait]
+impl<T: nanobot_core::tools::Tool + 'static> nanobot_core::tools::Tool for ArcToolWrapper<T> {
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+    fn description(&self) -> &str {
+        self.0.description()
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.0.parameters_schema()
+    }
+    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<String> {
+        self.0.execute(params).await
+    }
 }
 
 #[allow(deprecated)]
@@ -211,8 +437,17 @@ async fn run_single_message(
 #[allow(deprecated)]
 async fn run_interactive(
     mut agent_loop: AgentLoop<CompletionModelHandle<'static>>,
+    context_tools: ContextTools,
     session_key: &str,
 ) -> Result<()> {
+    // Set initial context from the session key
+    let parts: Vec<&str> = session_key.splitn(2, ':').collect();
+    let (channel, chat_id) = if parts.len() == 2 {
+        (parts[0], parts[1])
+    } else {
+        ("cli", session_key)
+    };
+    context_tools.set_context(channel, chat_id).await;
     let history_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".nanobot")

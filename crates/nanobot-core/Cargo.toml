@@ -21,3 +21,5 @@ dirs = { workspace = true }
 reqwest = { workspace = true }
 which = { workspace = true }
 html-escape = { workspace = true }
+croner = { workspace = true }
+uuid = { workspace = true }

@@ -7,6 +7,7 @@ pub struct Config {
     pub channels: ChannelsConfig,
     pub providers: ProvidersConfig,
     pub tools: ToolsConfig,
+    pub heartbeat: HeartbeatConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -112,5 +113,21 @@ pub struct ExecToolConfig {
 impl Default for ExecToolConfig {
     fn default() -> Self {
         Self { timeout_secs: 60 }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HeartbeatConfig {
+    pub enabled: bool,
+    pub interval_secs: u64,
+}
+
+impl Default for HeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_secs: 1800, // 30 minutes
+        }
     }
 }
