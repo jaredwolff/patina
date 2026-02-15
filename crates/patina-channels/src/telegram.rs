@@ -454,11 +454,13 @@ async fn handle_message(
         }
     }
 
-    let content = if content_parts.is_empty() {
-        "[empty message]".to_string()
-    } else {
-        content_parts.join("\n")
-    };
+    if content_parts.is_empty() {
+        // No text, caption, or media — likely a thread creation event or
+        // other structural message.  Ignore it silently.
+        debug!("Ignoring empty Telegram message (thread creation or structural event)");
+        return;
+    }
+    let content = content_parts.join("\n");
 
     debug!(
         "Telegram message from {sender_id}: {}...",
