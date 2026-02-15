@@ -560,6 +560,7 @@ fn is_sender_allowed(sender_id: &str, allow_from: &[String]) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 

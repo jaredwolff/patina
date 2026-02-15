@@ -19,6 +19,7 @@ use nanobot_core::tools::shell::ExecTool;
 use nanobot_core::tools::spawn::SpawnTool;
 use nanobot_core::tools::web::{WebFetchTool, WebSearchTool};
 use nanobot_core::tools::ToolRegistry;
+#[allow(deprecated)]
 use rig::client::completion::CompletionModelHandle;
 use rig::client::{CompletionClient, Nothing};
 use rig::providers::{anthropic, deepseek, gemini, groq, ollama, openai, openrouter};
@@ -461,6 +462,7 @@ impl ContextTools {
 }
 
 #[allow(deprecated)]
+#[allow(clippy::type_complexity)]
 fn build_agent_loop(
     config: &nanobot_config::Config,
     workspace: &Path,
@@ -1238,8 +1240,8 @@ async fn run_cron_command(action: CronCommands, config: &nanobot_config::Config)
                 return Ok(());
             }
             println!(
-                "{:<10} {:<8} {:<20} {:<15} {}",
-                "ID", "Enabled", "Name", "Schedule", "Next Run"
+                "{:<10} {:<8} {:<20} {:<15} Next Run",
+                "ID", "Enabled", "Name", "Schedule"
             );
             println!("{}", "-".repeat(75));
             for job in &jobs {

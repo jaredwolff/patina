@@ -65,6 +65,7 @@ impl CronService {
     }
 
     /// Add a new cron job.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_job(
         &mut self,
         name: &str,
@@ -345,7 +346,7 @@ pub(crate) fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Result<O
                 .parse()
                 .map_err(|e| anyhow::anyhow!("invalid cron expression '{expr}': {e}"))?;
 
-            let now = chrono::DateTime::from_timestamp_millis(now_ms).unwrap_or_else(|| Utc::now());
+            let now = chrono::DateTime::from_timestamp_millis(now_ms).unwrap_or_else(Utc::now);
 
             match cron.find_next_occurrence(&now, false) {
                 Ok(next) => Ok(Some(next.timestamp_millis())),

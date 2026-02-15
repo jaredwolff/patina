@@ -166,7 +166,7 @@ impl CronTool {
                 let next = job
                     .state
                     .next_run_at_ms
-                    .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms))
+                    .and_then(chrono::DateTime::from_timestamp_millis)
                     .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
                     .unwrap_or_else(|| "N/A".to_string());
 
@@ -208,7 +208,7 @@ impl CronTool {
             let next = job
                 .state
                 .next_run_at_ms
-                .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms))
+                .and_then(chrono::DateTime::from_timestamp_millis)
                 .map(|dt| dt.format("%H:%M:%S UTC").to_string())
                 .unwrap_or_else(|| "N/A".to_string());
 

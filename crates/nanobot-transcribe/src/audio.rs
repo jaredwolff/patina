@@ -19,10 +19,7 @@ pub fn ffmpeg_available() -> bool {
 /// The caller is responsible for cleaning up the temporary file.
 pub async fn convert_to_wav_16k(input_path: &str) -> Result<String> {
     let input = Path::new(input_path);
-    let stem = input
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy();
+    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
     let output = input.with_file_name(format!("{stem}_16k.wav"));
     let output_str = output.to_string_lossy().to_string();
 

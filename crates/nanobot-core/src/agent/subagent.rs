@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+#[allow(deprecated)]
 use rig::client::completion::CompletionModelHandle;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
