@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Nanobot is a lightweight AI agent framework written in Rust, designed to run LLM agents with tool-calling capabilities across multiple chat channels. It supports interactive CLI mode and gateway mode for persistent messaging integrations.
+Nanobot-rs is a lightweight AI agent framework written in Rust, designed to run LLM agents with tool-calling capabilities across multiple chat channels. It supports interactive CLI mode and gateway mode for persistent messaging integrations.
 
-**This is a rewrite of the Python nanobot** (see `../RUST_REWRITE_PLAN.md` for full strategy). The Rust version maintains compatibility with Python's config and session formats to allow side-by-side operation during transition.
+**Inspired by the nanobot concept**, this is a standalone Rust implementation optimized for low memory usage, fast startup, and local-first inference.
 
 ## Workspace Structure
 
@@ -75,6 +75,7 @@ Sessions are persisted as JSONL files in `~/.nanobot/sessions/`:
 - First line is metadata (type="metadata", timestamps, last_consolidated)
 - Subsequent lines are messages (role, content, timestamp, tools_used)
 - Session keys like `"cli:interactive"` are sanitized to filenames (`cli_interactive.jsonl`)
+- Uses standard JSONL format for interoperability
 
 Sessions track:
 - Message history with timestamps
@@ -130,9 +131,9 @@ Builds system prompt and message history for the LLM. Injects workspace path and
 
 ### Session Persistence Format
 
-Sessions use JSONL to match the Python nanobot format for cross-compatibility. When reading sessions:
+Sessions use JSONL for simplicity and interoperability. When reading sessions:
 - Check first line for `_type: "metadata"`
-- Parse timestamps as RFC3339 or Python isoformat fallback
+- Parse timestamps as RFC3339 with ISO 8601 fallback
 - Handle malformed lines gracefully (skip with warning)
 
 ### Error Handling
@@ -159,7 +160,7 @@ The `serve` command is a placeholder. Future implementation will:
 
 ## Implementation Status
 
-Currently at **Phase 1: Core Foundation** (see ../RUST_REWRITE_PLAN.md). Implemented:
+Currently at **Phase 1: Core Foundation**. Implemented:
 - ✅ Config loading (JSON with camelCase, serde)
 - ✅ Session persistence (JSONL, Python-compatible)
 - ✅ Message bus (tokio mpsc/broadcast)
@@ -178,7 +179,7 @@ Not yet implemented:
 - ❌ Heartbeat
 - ❌ Gateway mode (channel integrations)
 
-## Design Principles from RUST_REWRITE_PLAN.md
+## Design Principles
 
 ### Local-First Philosophy
 
@@ -189,18 +190,16 @@ Provider priority order (see main.rs:78-118):
 
 The agent loop uses rig's `CompletionModel` trait — provider selection is config-driven, not hardcoded.
 
-### Python Compatibility
+### Configuration and Session Formats
 
-These formats are **intentionally compatible** with the Python nanobot:
-- **config.json**: Same camelCase fields, same structure
-- **Session JSONL**: Same format (metadata line + message lines)
-- **Session keys**: Same `"{channel}:{chat_id}"` pattern
-
-This allows running Python and Rust versions side-by-side during transition.
+Standard formats for interoperability:
+- **config.json**: JSON with camelCase field names
+- **Session JSONL**: Metadata line followed by message lines
+- **Session keys**: Format `"{channel}:{chat_id}"`
 
 ### Skills Architecture (Future)
 
-Three layers (from RUST_REWRITE_PLAN.md):
+Three-layer design:
 1. **Markdown skills** (preferred): `SKILL.md` files with YAML frontmatter — LLM interprets instructions, no compilation needed
 2. **Bundled scripts**: Python/Bash scripts in `scripts/` dir — executed via `exec` tool
 3. **WASM plugins** (deferred): Native tool plugins with sandboxed execution
@@ -209,11 +208,10 @@ Current implementation: None yet (Phase 2). When implementing skills loader:
 - Parse YAML frontmatter from SKILL.md
 - Check requirements (`bins`, `env`)
 - Progressive loading: metadata always in context, full body on-demand
-- **Must be compatible with existing Python-era skills** — no migration required
 
 ### Channel Architecture (Future)
 
-The `Channel` trait (defined in RUST_REWRITE_PLAN.md but not yet implemented):
+The `Channel` trait (not yet implemented):
 ```rust
 #[async_trait]
 pub trait Channel: Send + Sync {
@@ -235,4 +233,129 @@ This is a new project with no legacy code. When making changes:
 - **Clean refactoring**: If something is unused after a change, remove it entirely
 - **Modern Rust idioms**: Use current best practices, no need to maintain old patterns
 - **Direct solutions**: Implement features cleanly without workarounds for historical reasons
-- **Respect Python compatibility where specified**: config.json and session JSONL formats must remain compatible
+- **Standard formats**: Use standard JSON and JSONL formats for config and sessions
+
+## Documentation Updates
+
+### README.md Maintenance
+
+The README.md should be kept up-to-date as features are implemented. When completing a feature:
+
+1. **Update implementation status**:
+   - Move features from 🚧 "In Progress" to ✅ "Implemented"
+   - Update the Phase completion status
+   - Remove "Stub" or "Partial" notes when fully working
+
+2. **Update feature tables**:
+   - Mark tools/channels as ✅ when implemented
+   - Update status badges (alpha → beta → stable)
+   - Add new features to appropriate sections
+
+3. **Update examples**:
+   - Add working examples for new features
+   - Remove "planned" or "not yet implemented" warnings
+   - Add configuration examples for new channels/providers
+
+4. **Keep it accurate**:
+   - Don't claim features work if they're stubbed
+   - Be honest about limitations
+   - Update performance metrics if measured
+
+### When to Update README
+
+Update README.md:
+- ✅ When a major feature becomes functional (memory consolidation, skills loader, new channel)
+- ✅ When moving between phases (Phase 1 → Phase 2)
+- ✅ When fixing significant bugs that affect documented behavior
+- ✅ When adding new configuration options
+- ❌ Not for minor refactorings or internal changes
+- ❌ Not for every small commit
+
+## Git Commit Workflow
+
+After completing work on nanobot-rs, follow this workflow to commit changes:
+
+### When to Commit
+
+Commit changes when:
+- A feature is implemented and builds successfully (`cargo build`)
+- Tests pass (`cargo test`)
+- The code is in a working, stable state
+- A logical unit of work is complete (e.g., "implement skills loader", "add Telegram channel")
+- README.md has been updated if the feature is user-facing
+
+### Commit Process
+
+1. **Update documentation** (if user-facing change):
+   - Update README.md implementation status
+   - Update feature tables and examples
+   - Mark features as complete in roadmap
+
+2. **Build and test**:
+   ```bash
+   cargo build && cargo test
+   ```
+   Only proceed if both succeed.
+
+3. **Check git status**:
+   ```bash
+   git status
+   ```
+   Review what files have changed.
+
+4. **Stage relevant files**:
+   ```bash
+   git add nanobot-rs/
+   ```
+   Or stage specific files if mixing work.
+
+5. **Create commit with descriptive message**:
+   ```bash
+   git commit -m "feat(nanobot-rs): implement memory consolidation
+
+   - Add MEMORY.md/HISTORY.md summarization
+   - Integrate with agent loop on threshold
+   - Add tests for consolidation logic
+
+   🤖 Generated with Claude Code
+
+   Co-Authored-By: Claude <noreply@anthropic.com>"
+   ```
+
+### Commit Message Guidelines
+
+- **Prefix**: Use conventional commits (feat, fix, docs, refactor, test, chore)
+- **Scope**: Use `(nanobot-rs)` to distinguish from Python nanobot commits
+- **Subject**: Imperative mood, lowercase, no period
+- **Body**: Bullet points explaining what changed and why
+- **Footer**: Include Claude Code attribution
+
+Examples:
+- `feat(nanobot-rs): add Telegram channel with thread support`
+- `fix(nanobot-rs): handle malformed session JSONL gracefully`
+- `docs(nanobot-rs): update README with Phase 2 completion`
+- `refactor(nanobot-rs): extract provider selection to separate module`
+- `test(nanobot-rs): add integration tests for agent loop`
+
+**Good commit that includes README update:**
+```bash
+git commit -m "feat(nanobot-rs): implement memory consolidation
+
+- Add MEMORY.md/HISTORY.md summarization
+- Integrate with agent loop on threshold
+- Add tests for consolidation logic
+- Update README: mark memory consolidation as ✅
+
+🤖 Generated with Claude Code
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+```
+
+### Important Notes
+
+- **Do NOT commit** if build/tests fail
+- **Do NOT mix** unrelated changes in one commit
+- **Do NOT push** to remote unless explicitly requested
+- **Do commit frequently** — small, logical commits are better than large monolithic ones
+- **Do update README** when completing user-facing features
+- **Keep documentation in sync** — outdated docs are worse than no docs
