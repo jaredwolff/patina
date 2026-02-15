@@ -77,7 +77,12 @@ impl ChannelManager {
     }
 
     /// Stop all channels and the outbound dispatcher.
-    pub async fn stop_all(&self) -> Result<()> {
+    pub async fn stop_all(&mut self) -> Result<()> {
+        if let Some(handle) = self.dispatch_handle.take() {
+            handle.abort();
+            info!("Stopped outbound dispatcher");
+        }
+
         let channels = self.channels.read().await;
         for (name, channel) in channels.iter() {
             info!("Stopping channel: {name}");
@@ -86,6 +91,128 @@ impl ChannelManager {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::time::{sleep, Duration};
+
+    struct MockChannel {
+        name: String,
+        starts: AtomicUsize,
+        stops: AtomicUsize,
+        sends: AtomicUsize,
+    }
+
+    impl MockChannel {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_string(),
+                starts: AtomicUsize::new(0),
+                stops: AtomicUsize::new(0),
+                sends: AtomicUsize::new(0),
+            }
+        }
+
+        fn starts(&self) -> usize {
+            self.starts.load(Ordering::SeqCst)
+        }
+
+        fn stops(&self) -> usize {
+            self.stops.load(Ordering::SeqCst)
+        }
+
+        fn sends(&self) -> usize {
+            self.sends.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl Channel for MockChannel {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        async fn start(&self, _inbound_tx: mpsc::Sender<InboundMessage>) -> Result<()> {
+            self.starts.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn stop(&self) -> Result<()> {
+            self.stops.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn send(&self, _msg: &OutboundMessage) -> Result<()> {
+            self.sends.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn is_allowed(&self, _sender_id: &str) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn manager_routes_outbound_and_stops_all() {
+        let (outbound_tx, outbound_rx) = broadcast::channel(16);
+        let mut manager = ChannelManager::new(outbound_rx);
+
+        let ch = Arc::new(MockChannel::new("telegram"));
+        let ch_dyn: Arc<dyn Channel> = ch.clone();
+        manager.register(ch_dyn).await;
+
+        let (inbound_tx, _inbound_rx) = mpsc::channel(16);
+        manager.start_all(inbound_tx).await.unwrap();
+        sleep(Duration::from_millis(50)).await;
+
+        outbound_tx
+            .send(OutboundMessage {
+                channel: "telegram".to_string(),
+                chat_id: "1".to_string(),
+                content: "hello".to_string(),
+                metadata: HashMap::new(),
+            })
+            .unwrap();
+        sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(ch.starts(), 1);
+        assert_eq!(ch.sends(), 1);
+
+        manager.stop_all().await.unwrap();
+        assert_eq!(ch.stops(), 1);
+    }
+
+    #[tokio::test]
+    async fn manager_ignores_unknown_outbound_channel() {
+        let (outbound_tx, outbound_rx) = broadcast::channel(16);
+        let mut manager = ChannelManager::new(outbound_rx);
+
+        let ch = Arc::new(MockChannel::new("telegram"));
+        let ch_dyn: Arc<dyn Channel> = ch.clone();
+        manager.register(ch_dyn).await;
+
+        let (inbound_tx, _inbound_rx) = mpsc::channel(16);
+        manager.start_all(inbound_tx).await.unwrap();
+        sleep(Duration::from_millis(50)).await;
+
+        outbound_tx
+            .send(OutboundMessage {
+                channel: "discord".to_string(),
+                chat_id: "1".to_string(),
+                content: "hello".to_string(),
+                metadata: HashMap::new(),
+            })
+            .unwrap();
+        sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(ch.sends(), 0);
+        manager.stop_all().await.unwrap();
     }
 }
 

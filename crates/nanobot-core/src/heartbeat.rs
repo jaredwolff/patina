@@ -153,6 +153,9 @@ fn is_heartbeat_empty(content: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
+    use tokio::sync::mpsc;
+    use tokio::time::{timeout, Duration};
 
     #[test]
     fn test_empty_heartbeat() {
@@ -184,5 +187,38 @@ mod tests {
         assert!(!is_heartbeat_empty(
             "# Heartbeat\n<!-- comment -->\n- [x] Done task\n"
         ));
+    }
+
+    #[tokio::test]
+    async fn trigger_now_emits_inbound_message_when_actionable() {
+        let dir = tempdir().unwrap();
+        let heartbeat_path = dir.path().join("HEARTBEAT.md");
+        std::fs::write(&heartbeat_path, "- check integrations").unwrap();
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let svc = HeartbeatService::new(dir.path().to_path_buf(), tx, Some(1));
+        svc.trigger_now().await.unwrap();
+
+        let msg = timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(msg.channel, "system");
+        assert_eq!(msg.sender_id, "heartbeat");
+        assert_eq!(msg.chat_id, "system:heartbeat");
+    }
+
+    #[tokio::test]
+    async fn trigger_now_skips_when_file_is_structurally_empty() {
+        let dir = tempdir().unwrap();
+        let heartbeat_path = dir.path().join("HEARTBEAT.md");
+        std::fs::write(&heartbeat_path, "# Heartbeat\n- [ ]\n").unwrap();
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let svc = HeartbeatService::new(dir.path().to_path_buf(), tx, Some(1));
+        svc.trigger_now().await.unwrap();
+
+        let recv = timeout(Duration::from_millis(100), rx.recv()).await;
+        assert!(recv.is_err(), "no heartbeat message should be emitted");
     }
 }
