@@ -21,4 +21,4 @@ serde_json = { workspace = true }
 reqwest = { workspace = true }
 which = { workspace = true }
 dirs = { workspace = true }
-parakeet-rs = { version = "0.3.3", optional = true, default-features = false, features = ["load-dynamic"] }
+parakeet-rs = { version = "0.3.3", optional = true }
