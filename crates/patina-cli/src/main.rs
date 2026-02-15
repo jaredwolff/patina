@@ -9,7 +9,7 @@ use patina_channels::telegram::TelegramChannel;
 use patina_config::{find_config_path, load_config, resolve_workspace};
 use patina_core::agent::subagent::SubagentManager;
 use patina_core::agent::{AgentLoop, ConsolidationResult, ContextBuilder, ModelOverrides};
-use patina_core::bus::{MessageBus, OutboundMessage};
+use patina_core::bus::{InboundMessage, MessageBus, OutboundMessage};
 use patina_core::cron::CronService;
 use patina_core::session::SessionManager;
 use patina_core::tools::cron::CronTool;
@@ -674,6 +674,9 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
     // Channel for background consolidation completions
     let (consol_tx, mut consol_rx) = tokio::sync::mpsc::channel::<ConsolidationResult>(16);
 
+    // Buffer for messages received while processing (from other sessions or slash commands)
+    let mut pending: Vec<InboundMessage> = Vec::new();
+
     // Main inbound processing loop
     loop {
         // Drain any completed background consolidations (non-blocking)
@@ -681,173 +684,47 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
             agent_loop.apply_consolidation(&result);
         }
 
-        tokio::select! {
-            msg = bus.inbound_rx.recv() => {
-                let msg = match msg {
+        // Take next message: from pending buffer first, then from channel
+        let msg = if let Some(buffered) = pending.pop() {
+            buffered
+        } else {
+            tokio::select! {
+                msg = bus.inbound_rx.recv() => match msg {
                     Some(m) => m,
                     None => {
                         tracing::info!("Inbound channel closed");
                         break;
                     }
-                };
-
-                // System messages from subagents need special routing.
-                // chat_id contains "origin_channel:origin_chat_id" to route
-                // the response back to the correct destination.
-                if msg.channel == "system" {
-                    let (origin_channel, origin_chat_id) =
-                        if let Some((ch, cid)) = msg.chat_id.split_once(':') {
-                            (ch.to_string(), cid.to_string())
-                        } else {
-                            ("cli".to_string(), msg.chat_id.clone())
-                        };
-
-                    let session_key = format!("{origin_channel}:{origin_chat_id}");
-                    context_tools
-                        .set_context(&origin_channel, &origin_chat_id)
-                        .await;
-
-                    // Prefix content with system sender info
-                    let system_content =
-                        format!("[System: {}] {}", msg.sender_id, msg.content);
-
-                    let result = tokio::select! {
-                        res = agent_loop.process_message(&session_key, &system_content, None) => Some(res),
-                        _ = tokio::signal::ctrl_c() => {
-                            tracing::info!("Shutting down...");
-                            None
-                        }
-                    };
-                    match result {
-                        Some(Ok((response, needs_consolidation))) => {
-                            if let Err(e) = bus.outbound_tx.send(OutboundMessage {
-                                channel: origin_channel,
-                                chat_id: origin_chat_id,
-                                content: response,
-                                reply_to: None,
-                                metadata: msg.metadata.clone(),
-                            }) {
-                                tracing::warn!(
-                                    "Failed to publish outbound system response to bus: {e}"
-                                );
-                            }
-                            if needs_consolidation {
-                                if let Some(task) = agent_loop.prepare_consolidation(&session_key, false) {
-                                    let model = agent_loop.model.clone();
-                                    let tx = consol_tx.clone();
-                                    tokio::spawn(async move {
-                                        if let Some(result) = AgentLoop::run_consolidation(&model, &task).await {
-                                            let _ = tx.send(result).await;
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                        Some(Err(e)) => {
-                            tracing::error!("Error processing system message: {e}");
-                            if let Err(send_err) = bus.outbound_tx.send(OutboundMessage {
-                                channel: origin_channel,
-                                chat_id: origin_chat_id,
-                                content: format!(
-                                    "Background task completed but I couldn't process the result: {e}"
-                                ),
-                                reply_to: None,
-                                metadata: HashMap::new(),
-                            }) {
-                                tracing::warn!(
-                                    "Failed to publish outbound system-error response to bus: {send_err}"
-                                );
-                            }
-                        }
-                        None => break,
-                    }
-                    continue;
+                },
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("Shutting down...");
+                    break;
                 }
+            }
+        };
 
-                // Update tool context for this message's origin
+        {
+            // System messages from subagents need special routing.
+            // chat_id contains "origin_channel:origin_chat_id" to route
+            // the response back to the correct destination.
+            if msg.channel == "system" {
+                let (origin_channel, origin_chat_id) =
+                    if let Some((ch, cid)) = msg.chat_id.split_once(':') {
+                        (ch.to_string(), cid.to_string())
+                    } else {
+                        ("cli".to_string(), msg.chat_id.clone())
+                    };
+
+                let session_key = format!("{origin_channel}:{origin_chat_id}");
                 context_tools
-                    .set_context(&msg.channel, &msg.chat_id)
+                    .set_context(&origin_channel, &origin_chat_id)
                     .await;
 
-                let session_key = msg.session_key();
+                // Prefix content with system sender info
+                let system_content = format!("[System: {}] {}", msg.sender_id, msg.content);
 
-                // Handle slash commands
-                let content = msg.content.trim();
-                if content == "/new" {
-                    // Consolidate memory and start fresh
-                    let session = match agent_loop.sessions.get_or_create_checked(&session_key) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            tracing::error!("Failed to load session '{session_key}': {e}");
-                            if let Err(send_err) = bus.outbound_tx.send(OutboundMessage {
-                                channel: msg.channel.clone(),
-                                chat_id: msg.chat_id.clone(),
-                                content: format!(
-                                    "I couldn't load your session state: {e}. \
-        Try checking session file permissions."
-                                ),
-                                reply_to: None,
-                                metadata: HashMap::new(),
-                            }) {
-                                tracing::warn!(
-                                    "Failed to publish session-load error response: {send_err}"
-                                );
-                            }
-                            continue;
-                        }
-                    };
-                    let has_messages = !session.messages.is_empty();
-                    if has_messages {
-                        agent_loop.consolidate_memory(&session_key, true).await;
-                    }
-                    let session = match agent_loop.sessions.get_or_create_checked(&session_key) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to reload session '{session_key}' before clear: {e}"
-                            );
-                            continue;
-                        }
-                    };
-                    session.clear();
-                    if let Err(e) = agent_loop.sessions.save(&session_key) {
-                        tracing::warn!("Failed to save cleared session '{session_key}': {e}");
-                    }
-                    agent_loop.sessions.invalidate(&session_key);
-
-                    if let Err(e) = bus.outbound_tx.send(OutboundMessage {
-                        channel: msg.channel.clone(),
-                        chat_id: msg.chat_id.clone(),
-                        content: "New session started. Previous conversation has been saved to memory.".to_string(),
-                        reply_to: None,
-                        metadata: msg.metadata.clone(),
-                    }) {
-                        tracing::warn!("Failed to publish /new acknowledgement to bus: {e}");
-                    }
-                    continue;
-                }
-
-                if content == "/help" || content == "/start" {
-                    if let Err(e) = bus.outbound_tx.send(OutboundMessage {
-                        channel: msg.channel.clone(),
-                        chat_id: msg.chat_id.clone(),
-                        content: "Hi! I'm Patina.\n\nSend me a message and I'll respond.\n\nCommands:\n/new - Start a new conversation\n/help - Show this help".to_string(),
-                        reply_to: None,
-                        metadata: msg.metadata.clone(),
-                    }) {
-                        tracing::warn!("Failed to publish help response to bus: {e}");
-                    }
-                    continue;
-                }
-
-                // Process through agent
-                let media_opt = if msg.media.is_empty() {
-                    None
-                } else {
-                    Some(msg.media.as_slice())
-                };
                 let result = tokio::select! {
-                    res = agent_loop.process_message(&session_key, content, media_opt) => Some(res),
+                    res = agent_loop.process_message(&session_key, &system_content, None) => Some(res),
                     _ = tokio::signal::ctrl_c() => {
                         tracing::info!("Shutting down...");
                         None
@@ -856,20 +733,26 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                 match result {
                     Some(Ok((response, needs_consolidation))) => {
                         if let Err(e) = bus.outbound_tx.send(OutboundMessage {
-                            channel: msg.channel.clone(),
-                            chat_id: msg.chat_id.clone(),
+                            channel: origin_channel,
+                            chat_id: origin_chat_id,
                             content: response,
                             reply_to: None,
                             metadata: msg.metadata.clone(),
                         }) {
-                            tracing::warn!("Failed to publish outbound response to bus: {e}");
+                            tracing::warn!(
+                                "Failed to publish outbound system response to bus: {e}"
+                            );
                         }
                         if needs_consolidation {
-                            if let Some(task) = agent_loop.prepare_consolidation(&session_key, false) {
+                            if let Some(task) =
+                                agent_loop.prepare_consolidation(&session_key, false)
+                            {
                                 let model = agent_loop.model.clone();
                                 let tx = consol_tx.clone();
                                 tokio::spawn(async move {
-                                    if let Some(result) = AgentLoop::run_consolidation(&model, &task).await {
+                                    if let Some(result) =
+                                        AgentLoop::run_consolidation(&model, &task).await
+                                    {
                                         let _ = tx.send(result).await;
                                     }
                                 });
@@ -877,25 +760,231 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                         }
                     }
                     Some(Err(e)) => {
-                        tracing::error!("Error processing message: {e}");
+                        tracing::error!("Error processing system message: {e}");
                         if let Err(send_err) = bus.outbound_tx.send(OutboundMessage {
-                            channel: msg.channel.clone(),
-                            chat_id: msg.chat_id.clone(),
-                            content: format!("Sorry, I encountered an error: {e}"),
+                            channel: origin_channel,
+                            chat_id: origin_chat_id,
+                            content: format!(
+                                "Background task completed but I couldn't process the result: {e}"
+                            ),
                             reply_to: None,
                             metadata: HashMap::new(),
                         }) {
                             tracing::warn!(
-                                "Failed to publish outbound error response to bus: {send_err}"
-                            );
+                                    "Failed to publish outbound system-error response to bus: {send_err}"
+                                );
                         }
                     }
                     None => break,
                 }
+                continue;
             }
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("Shutting down...");
-                break;
+
+            // Update tool context for this message's origin
+            context_tools.set_context(&msg.channel, &msg.chat_id).await;
+
+            let session_key = msg.session_key();
+
+            // Handle slash commands
+            let content = msg.content.trim();
+            if content == "/new" {
+                // Consolidate memory and start fresh
+                let session = match agent_loop.sessions.get_or_create_checked(&session_key) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::error!("Failed to load session '{session_key}': {e}");
+                        if let Err(send_err) = bus.outbound_tx.send(OutboundMessage {
+                            channel: msg.channel.clone(),
+                            chat_id: msg.chat_id.clone(),
+                            content: format!(
+                                "I couldn't load your session state: {e}. \
+        Try checking session file permissions."
+                            ),
+                            reply_to: None,
+                            metadata: HashMap::new(),
+                        }) {
+                            tracing::warn!(
+                                "Failed to publish session-load error response: {send_err}"
+                            );
+                        }
+                        continue;
+                    }
+                };
+                let has_messages = !session.messages.is_empty();
+                if has_messages {
+                    agent_loop.consolidate_memory(&session_key, true).await;
+                }
+                let session = match agent_loop.sessions.get_or_create_checked(&session_key) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to reload session '{session_key}' before clear: {e}"
+                        );
+                        continue;
+                    }
+                };
+                session.clear();
+                if let Err(e) = agent_loop.sessions.save(&session_key) {
+                    tracing::warn!("Failed to save cleared session '{session_key}': {e}");
+                }
+                agent_loop.sessions.invalidate(&session_key);
+
+                if let Err(e) = bus.outbound_tx.send(OutboundMessage {
+                    channel: msg.channel.clone(),
+                    chat_id: msg.chat_id.clone(),
+                    content: "New session started. Previous conversation has been saved to memory."
+                        .to_string(),
+                    reply_to: None,
+                    metadata: msg.metadata.clone(),
+                }) {
+                    tracing::warn!("Failed to publish /new acknowledgement to bus: {e}");
+                }
+                continue;
+            }
+
+            if content == "/help" || content == "/start" {
+                if let Err(e) = bus.outbound_tx.send(OutboundMessage {
+                        channel: msg.channel.clone(),
+                        chat_id: msg.chat_id.clone(),
+                        content: "Hi! I'm Patina.\n\nSend me a message and I'll respond.\n\nCommands:\n/new - Start a new conversation\n/help - Show this help".to_string(),
+                        reply_to: None,
+                        metadata: msg.metadata.clone(),
+                    }) {
+                        tracing::warn!("Failed to publish help response to bus: {e}");
+                    }
+                continue;
+            }
+
+            // === Layer 1: Pre-process drain for same-session coalescing ===
+            // Gather content parts from this message, then drain pending + channel
+            // for any additional same-session messages that arrived while we were busy.
+            let mut content_parts: Vec<String> = vec![msg.content.clone()];
+            let mut combined_media: Vec<String> = msg.media.clone();
+            let mut last_metadata = msg.metadata.clone();
+
+            // Drain pending buffer for same-session messages
+            let mut kept = Vec::new();
+            for queued in pending.drain(..) {
+                if queued.session_key() == session_key && !queued.content.trim().starts_with('/') {
+                    content_parts.push(queued.content);
+                    combined_media.extend(queued.media);
+                    last_metadata = queued.metadata;
+                } else {
+                    kept.push(queued);
+                }
+            }
+            pending = kept;
+
+            // Non-blocking drain of inbound channel for same-session messages
+            while let Ok(extra) = bus.inbound_rx.try_recv() {
+                if extra.session_key() == session_key && !extra.content.trim().starts_with('/') {
+                    content_parts.push(extra.content);
+                    combined_media.extend(extra.media);
+                    last_metadata = extra.metadata;
+                } else {
+                    pending.push(extra);
+                }
+            }
+
+            if content_parts.len() > 1 {
+                tracing::info!(
+                    "Coalesced {} messages for session '{}'",
+                    content_parts.len(),
+                    session_key
+                );
+            }
+
+            // === Layer 2: Active cancellation via pinned select loop ===
+            // Process with ability to cancel and restart if new same-session messages arrive.
+            let result = 'coalesce: loop {
+                let combined = content_parts.join("\n\n");
+                let media_snapshot: Vec<String> = combined_media.clone();
+                let media_opt = if media_snapshot.is_empty() {
+                    None
+                } else {
+                    Some(media_snapshot.as_slice())
+                };
+
+                let process_fut = agent_loop.process_message(&session_key, &combined, media_opt);
+                tokio::pin!(process_fut);
+
+                let inner_result = loop {
+                    tokio::select! {
+                        biased;
+                        res = &mut process_fut => break Some(res),
+                        new_msg = bus.inbound_rx.recv() => {
+                            match new_msg {
+                                Some(m)
+                                    if m.session_key() == session_key
+                                        && !m.content.trim().starts_with('/') =>
+                                {
+                                    tracing::info!(
+                                        "Cancelling in-flight for '{}', coalescing new message",
+                                        session_key
+                                    );
+                                    content_parts.push(m.content);
+                                    combined_media.extend(m.media);
+                                    last_metadata = m.metadata;
+                                    continue 'coalesce; // drop process_fut, restart
+                                }
+                                Some(m) => {
+                                    pending.push(m);
+                                    // continue inner loop, process_fut still polled
+                                }
+                                None => break None,
+                            }
+                        }
+                        _ = tokio::signal::ctrl_c() => {
+                            tracing::info!("Shutting down...");
+                            break None;
+                        }
+                    }
+                };
+
+                break inner_result;
+            };
+
+            // === Handle result ===
+            match result {
+                Some(Ok((response, needs_consolidation))) => {
+                    if let Err(e) = bus.outbound_tx.send(OutboundMessage {
+                        channel: msg.channel.clone(),
+                        chat_id: msg.chat_id.clone(),
+                        content: response,
+                        reply_to: None,
+                        metadata: last_metadata,
+                    }) {
+                        tracing::warn!("Failed to publish outbound response to bus: {e}");
+                    }
+                    if needs_consolidation {
+                        if let Some(task) = agent_loop.prepare_consolidation(&session_key, false) {
+                            let model = agent_loop.model.clone();
+                            let tx = consol_tx.clone();
+                            tokio::spawn(async move {
+                                if let Some(result) =
+                                    AgentLoop::run_consolidation(&model, &task).await
+                                {
+                                    let _ = tx.send(result).await;
+                                }
+                            });
+                        }
+                    }
+                }
+                Some(Err(e)) => {
+                    tracing::error!("Error processing message: {e}");
+                    if let Err(send_err) = bus.outbound_tx.send(OutboundMessage {
+                        channel: msg.channel.clone(),
+                        chat_id: msg.chat_id.clone(),
+                        content: format!("Sorry, I encountered an error: {e}"),
+                        reply_to: None,
+                        metadata: HashMap::new(),
+                    }) {
+                        tracing::warn!(
+                            "Failed to publish outbound error response to bus: {send_err}"
+                        );
+                    }
+                }
+                None => break,
             }
         }
     }
