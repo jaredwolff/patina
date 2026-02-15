@@ -110,6 +110,33 @@ impl<M: CompletionModel> AgentLoop<M> {
             self.context
                 .build_messages(&history, user_message, None, None, media)?;
 
+        // Log context summary
+        {
+            let system_chars = messages_json
+                .first()
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_str())
+                .map(|s| s.len())
+                .unwrap_or(0);
+            let msg_summary: Vec<String> = messages_json
+                .iter()
+                .skip(1)
+                .map(|m| {
+                    let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("?");
+                    let len = m
+                        .get("content")
+                        .and_then(|c| c.as_str())
+                        .map(|s| s.len())
+                        .unwrap_or(0);
+                    format!("{role}:{len}")
+                })
+                .collect();
+            debug!(
+                "Context: system={system_chars} chars, history=[{}]",
+                msg_summary.join(", ")
+            );
+        }
+
         // Convert to rig Message format
         let system_prompt = messages_json
             .first()

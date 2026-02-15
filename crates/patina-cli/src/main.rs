@@ -169,11 +169,10 @@ enum ChannelCommands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let base_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    let filter = format!("{base_filter},ort=error,ort::logging=error,patina_core::agent=debug");
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,ort=error,patina_core::agent=debug".into()),
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
         .init();
 
     let cli = Cli::parse();
