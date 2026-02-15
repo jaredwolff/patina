@@ -372,3 +372,199 @@ impl Tool for ListDirTool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_read_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "hello world").unwrap();
+
+        let tool = ReadFileTool::new(None);
+        let result = tool
+            .execute(serde_json::json!({"path": file.to_str().unwrap()}))
+            .await
+            .unwrap();
+        assert_eq!(result, "hello world");
+    }
+
+    #[tokio::test]
+    async fn test_read_file_not_found() {
+        let tool = ReadFileTool::new(None);
+        let result = tool
+            .execute(serde_json::json!({"path": "/tmp/nonexistent_nanobot_test_file.txt"}))
+            .await
+            .unwrap();
+        assert!(result.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_read_file_is_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = ReadFileTool::new(None);
+        let result = tool
+            .execute(serde_json::json!({"path": dir.path().to_str().unwrap()}))
+            .await
+            .unwrap();
+        assert!(result.contains("Not a file"));
+    }
+
+    #[tokio::test]
+    async fn test_read_file_outside_allowed_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = ReadFileTool::new(Some(dir.path().to_path_buf()));
+        let result = tool
+            .execute(serde_json::json!({"path": "/etc/hostname"}))
+            .await
+            .unwrap();
+        assert!(result.contains("outside allowed directory"));
+    }
+
+    #[tokio::test]
+    async fn test_write_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("output.txt");
+
+        let tool = WriteFileTool::new(None);
+        let result = tool
+            .execute(serde_json::json!({
+                "path": file.to_str().unwrap(),
+                "content": "written content"
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.contains("Successfully wrote"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "written content");
+    }
+
+    #[tokio::test]
+    async fn test_write_file_creates_parent_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a/b/c/deep.txt");
+
+        let tool = WriteFileTool::new(None);
+        tool.execute(serde_json::json!({
+            "path": file.to_str().unwrap(),
+            "content": "deep"
+        }))
+        .await
+        .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "deep");
+    }
+
+    #[tokio::test]
+    async fn test_write_file_outside_allowed_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = WriteFileTool::new(Some(dir.path().to_path_buf()));
+        let result = tool
+            .execute(serde_json::json!({
+                "path": "/tmp/nanobot_escape_test.txt",
+                "content": "nope"
+            }))
+            .await
+            .unwrap();
+        assert!(result.contains("outside allowed directory"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_file_replace() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("edit.txt");
+        std::fs::write(&file, "hello world").unwrap();
+
+        let tool = EditFileTool::new(None);
+        let result = tool
+            .execute(serde_json::json!({
+                "path": file.to_str().unwrap(),
+                "old_text": "world",
+                "new_text": "rust"
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.contains("Successfully edited"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello rust");
+    }
+
+    #[tokio::test]
+    async fn test_edit_file_not_found_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("edit.txt");
+        std::fs::write(&file, "hello world").unwrap();
+
+        let tool = EditFileTool::new(None);
+        let result = tool
+            .execute(serde_json::json!({
+                "path": file.to_str().unwrap(),
+                "old_text": "nonexistent",
+                "new_text": "replacement"
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.contains("old_text not found"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_file_duplicate_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("edit.txt");
+        std::fs::write(&file, "foo bar foo baz").unwrap();
+
+        let tool = EditFileTool::new(None);
+        let result = tool
+            .execute(serde_json::json!({
+                "path": file.to_str().unwrap(),
+                "old_text": "foo",
+                "new_text": "qux"
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.contains("appears 2 times"));
+    }
+
+    #[tokio::test]
+    async fn test_list_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("file_a.txt"), "").unwrap();
+        std::fs::write(dir.path().join("file_b.txt"), "").unwrap();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+
+        let tool = ListDirTool::new(None);
+        let result = tool
+            .execute(serde_json::json!({"path": dir.path().to_str().unwrap()}))
+            .await
+            .unwrap();
+
+        assert!(result.contains("[file] file_a.txt"));
+        assert!(result.contains("[file] file_b.txt"));
+        assert!(result.contains("[dir]  subdir"));
+    }
+
+    #[tokio::test]
+    async fn test_list_dir_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = ListDirTool::new(None);
+        let result = tool
+            .execute(serde_json::json!({"path": dir.path().to_str().unwrap()}))
+            .await
+            .unwrap();
+        assert!(result.contains("is empty"));
+    }
+
+    #[tokio::test]
+    async fn test_list_dir_not_found() {
+        let tool = ListDirTool::new(None);
+        let result = tool
+            .execute(serde_json::json!({"path": "/tmp/nonexistent_nanobot_dir_test"}))
+            .await
+            .unwrap();
+        assert!(result.contains("not found"));
+    }
+}

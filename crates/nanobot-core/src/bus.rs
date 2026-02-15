@@ -46,3 +46,97 @@ impl MessageBus {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_session_key_format() {
+        let msg = InboundMessage {
+            channel: "telegram".into(),
+            sender_id: "user42".into(),
+            chat_id: "12345".into(),
+            content: "hello".into(),
+            media: Vec::new(),
+            metadata: HashMap::new(),
+        };
+        assert_eq!(msg.session_key(), "telegram:12345");
+    }
+
+    #[test]
+    fn test_session_key_with_special_chars() {
+        let msg = InboundMessage {
+            channel: "cli".into(),
+            sender_id: "local".into(),
+            chat_id: "interactive".into(),
+            content: "".into(),
+            media: Vec::new(),
+            metadata: HashMap::new(),
+        };
+        assert_eq!(msg.session_key(), "cli:interactive");
+    }
+
+    #[tokio::test]
+    async fn test_inbound_send_receive() {
+        let mut bus = MessageBus::new(16);
+        let msg = InboundMessage {
+            channel: "test".into(),
+            sender_id: "u1".into(),
+            chat_id: "c1".into(),
+            content: "hello".into(),
+            media: vec!["photo.jpg".into()],
+            metadata: HashMap::new(),
+        };
+
+        bus.inbound_tx.send(msg).await.unwrap();
+        let received = bus.inbound_rx.recv().await.unwrap();
+        assert_eq!(received.content, "hello");
+        assert_eq!(received.media, vec!["photo.jpg"]);
+    }
+
+    #[tokio::test]
+    async fn test_outbound_broadcast() {
+        let bus = MessageBus::new(16);
+        let mut rx1 = bus.outbound_tx.subscribe();
+        let mut rx2 = bus.outbound_tx.subscribe();
+
+        let msg = OutboundMessage {
+            channel: "telegram".into(),
+            chat_id: "99".into(),
+            content: "response".into(),
+            metadata: HashMap::new(),
+        };
+
+        bus.outbound_tx.send(msg).unwrap();
+
+        let r1 = rx1.recv().await.unwrap();
+        let r2 = rx2.recv().await.unwrap();
+        assert_eq!(r1.content, "response");
+        assert_eq!(r2.content, "response");
+    }
+
+    #[test]
+    fn test_inbound_message_serialization() {
+        let msg = InboundMessage {
+            channel: "test".into(),
+            sender_id: "u".into(),
+            chat_id: "c".into(),
+            content: "hi".into(),
+            media: Vec::new(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("key".into(), serde_json::json!("value"));
+                m
+            },
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: InboundMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.content, "hi");
+        assert_eq!(
+            deserialized.metadata.get("key"),
+            Some(&serde_json::json!("value"))
+        );
+    }
+}

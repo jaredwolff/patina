@@ -188,3 +188,151 @@ impl Tool for ExecTool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_tool(restrict: bool) -> ExecTool {
+        let dir = std::env::temp_dir().join("nanobot_shell_test");
+        std::fs::create_dir_all(&dir).ok();
+        ExecTool::new(dir, 10, restrict)
+    }
+
+    // --- Safety guard tests ---
+
+    #[test]
+    fn test_guard_allows_safe_commands() {
+        let tool = make_tool(false);
+        assert!(tool
+            .guard_command("echo hello", &tool.working_dir)
+            .is_none());
+        assert!(tool.guard_command("ls -la", &tool.working_dir).is_none());
+        assert!(tool
+            .guard_command("cat /etc/hostname", &tool.working_dir)
+            .is_none());
+    }
+
+    #[test]
+    fn test_guard_blocks_rm_rf() {
+        let tool = make_tool(false);
+        let result = tool.guard_command("rm -rf /", &tool.working_dir);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("blocked"));
+    }
+
+    #[test]
+    fn test_guard_blocks_rm_f() {
+        let tool = make_tool(false);
+        assert!(tool
+            .guard_command("rm -f important.db", &tool.working_dir)
+            .is_some());
+    }
+
+    #[test]
+    fn test_guard_blocks_dd() {
+        let tool = make_tool(false);
+        assert!(tool
+            .guard_command("dd if=/dev/zero of=/dev/sda", &tool.working_dir)
+            .is_some());
+    }
+
+    #[test]
+    fn test_guard_blocks_shutdown() {
+        let tool = make_tool(false);
+        assert!(tool
+            .guard_command("shutdown -h now", &tool.working_dir)
+            .is_some());
+        assert!(tool.guard_command("reboot", &tool.working_dir).is_some());
+    }
+
+    #[test]
+    fn test_guard_blocks_fork_bomb() {
+        let tool = make_tool(false);
+        assert!(tool
+            .guard_command(":() { :|:& }; :", &tool.working_dir)
+            .is_some());
+    }
+
+    #[test]
+    fn test_guard_blocks_path_traversal_when_restricted() {
+        let tool = make_tool(true);
+        let result = tool.guard_command("cat ../../../etc/passwd", &tool.working_dir);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("path traversal"));
+    }
+
+    #[test]
+    fn test_guard_allows_path_traversal_when_unrestricted() {
+        let tool = make_tool(false);
+        assert!(tool
+            .guard_command("cat ../something", &tool.working_dir)
+            .is_none());
+    }
+
+    // --- Execution tests ---
+
+    #[tokio::test]
+    async fn test_exec_simple_command() {
+        let tool = make_tool(false);
+        let result = tool
+            .execute(serde_json::json!({"command": "echo hello"}))
+            .await
+            .unwrap();
+        assert_eq!(result.trim(), "hello");
+    }
+
+    #[tokio::test]
+    async fn test_exec_captures_stderr() {
+        let tool = make_tool(false);
+        let result = tool
+            .execute(serde_json::json!({"command": "echo err >&2"}))
+            .await
+            .unwrap();
+        assert!(result.contains("STDERR:"));
+        assert!(result.contains("err"));
+    }
+
+    #[tokio::test]
+    async fn test_exec_nonzero_exit() {
+        let tool = make_tool(false);
+        let result = tool
+            .execute(serde_json::json!({"command": "exit 42"}))
+            .await
+            .unwrap();
+        assert!(result.contains("Exit code: 42"));
+    }
+
+    #[tokio::test]
+    async fn test_exec_no_output() {
+        let tool = make_tool(false);
+        let result = tool
+            .execute(serde_json::json!({"command": "true"}))
+            .await
+            .unwrap();
+        assert_eq!(result, "(no output)");
+    }
+
+    #[tokio::test]
+    async fn test_exec_timeout() {
+        let dir = std::env::temp_dir().join("nanobot_shell_test");
+        std::fs::create_dir_all(&dir).ok();
+        let tool = ExecTool::new(dir, 1, false); // 1 second timeout
+
+        let result = tool
+            .execute(serde_json::json!({"command": "sleep 10"}))
+            .await
+            .unwrap();
+        assert!(result.contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn test_exec_blocked_command() {
+        let tool = make_tool(false);
+        let result = tool
+            .execute(serde_json::json!({"command": "rm -rf /"}))
+            .await
+            .unwrap();
+        assert!(result.contains("blocked"));
+    }
+}

@@ -312,3 +312,232 @@ pub struct SessionInfo {
     pub updated_at: String,
     pub path: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_session_new() {
+        let s = Session::new("test:chat".into());
+        assert_eq!(s.key, "test:chat");
+        assert!(s.messages.is_empty());
+        assert_eq!(s.last_consolidated, 0);
+        assert!(s.metadata.is_empty());
+    }
+
+    #[test]
+    fn test_add_message() {
+        let mut s = Session::new("k".into());
+        s.add_message("user", "hello");
+        s.add_message("assistant", "hi there");
+
+        assert_eq!(s.messages.len(), 2);
+        assert_eq!(s.messages[0].role, "user");
+        assert_eq!(s.messages[0].content, "hello");
+        assert!(s.messages[0].timestamp.is_some());
+        assert!(s.messages[0].tools_used.is_none());
+        assert_eq!(s.messages[1].role, "assistant");
+    }
+
+    #[test]
+    fn test_add_message_with_tools() {
+        let mut s = Session::new("k".into());
+        s.add_message_with_tools("assistant", "done", vec!["read_file".into(), "exec".into()]);
+        s.add_message_with_tools("assistant", "simple", vec![]);
+
+        assert_eq!(
+            s.messages[0].tools_used,
+            Some(vec!["read_file".into(), "exec".into()])
+        );
+        // Empty vec should become None
+        assert!(s.messages[1].tools_used.is_none());
+    }
+
+    #[test]
+    fn test_add_message_full_with_reasoning() {
+        let mut s = Session::new("k".into());
+        s.add_message_full(
+            "assistant",
+            "answer",
+            vec!["web_fetch".into()],
+            Some("I thought about it deeply".into()),
+        );
+
+        assert_eq!(
+            s.messages[0].reasoning_content,
+            Some("I thought about it deeply".into())
+        );
+        assert_eq!(s.messages[0].tools_used, Some(vec!["web_fetch".into()]));
+    }
+
+    #[test]
+    fn test_add_message_full_no_reasoning() {
+        let mut s = Session::new("k".into());
+        s.add_message_full("assistant", "answer", vec![], None);
+
+        assert!(s.messages[0].reasoning_content.is_none());
+        assert!(s.messages[0].tools_used.is_none());
+    }
+
+    #[test]
+    fn test_get_history_windowing() {
+        let mut s = Session::new("k".into());
+        for i in 0..10 {
+            s.add_message("user", &format!("msg {i}"));
+        }
+
+        let h = s.get_history(3);
+        assert_eq!(h.len(), 3);
+        assert_eq!(h[0].content, "msg 7");
+        assert_eq!(h[2].content, "msg 9");
+
+        // Window larger than messages
+        let h = s.get_history(100);
+        assert_eq!(h.len(), 10);
+        assert_eq!(h[0].content, "msg 0");
+
+        // Empty session
+        let empty = Session::new("e".into());
+        assert!(empty.get_history(5).is_empty());
+    }
+
+    #[test]
+    fn test_clear() {
+        let mut s = Session::new("k".into());
+        s.add_message("user", "hello");
+        s.last_consolidated = 5;
+        let before = s.updated_at;
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        s.clear();
+
+        assert!(s.messages.is_empty());
+        assert_eq!(s.last_consolidated, 0);
+        assert!(s.updated_at >= before);
+    }
+
+    #[test]
+    fn test_updated_at_tracks_mutations() {
+        let mut s = Session::new("k".into());
+        let t0 = s.updated_at;
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        s.add_message("user", "hi");
+        let t1 = s.updated_at;
+        assert!(t1 > t0);
+    }
+
+    #[test]
+    fn test_session_manager_save_load_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SessionManager::new(dir.path().to_path_buf());
+
+        let session = mgr.get_or_create("telegram:12345");
+        session.add_message("user", "hello world");
+        session.add_message_full(
+            "assistant",
+            "hi!",
+            vec!["exec".into()],
+            Some("reasoning here".into()),
+        );
+        session
+            .metadata
+            .insert("test".into(), serde_json::json!("value"));
+        session.last_consolidated = 1;
+        mgr.save("telegram:12345").unwrap();
+
+        // Load into a fresh manager
+        let mut mgr2 = SessionManager::new(dir.path().to_path_buf());
+        let loaded = mgr2.get_or_create("telegram:12345");
+
+        assert_eq!(loaded.messages.len(), 2);
+        assert_eq!(loaded.messages[0].role, "user");
+        assert_eq!(loaded.messages[0].content, "hello world");
+        assert_eq!(loaded.messages[1].role, "assistant");
+        assert_eq!(loaded.messages[1].content, "hi!");
+        assert_eq!(loaded.messages[1].tools_used, Some(vec!["exec".into()]));
+        assert_eq!(
+            loaded.messages[1].reasoning_content,
+            Some("reasoning here".into())
+        );
+        assert_eq!(loaded.last_consolidated, 1);
+        assert_eq!(
+            loaded.metadata.get("test"),
+            Some(&serde_json::json!("value"))
+        );
+    }
+
+    #[test]
+    fn test_session_path_escaping() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(dir.path().to_path_buf());
+
+        let path = mgr.session_path("telegram:12345");
+        assert!(path.to_string_lossy().contains("telegram_12345.jsonl"));
+    }
+
+    #[test]
+    fn test_missing_session_creates_new() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SessionManager::new(dir.path().to_path_buf());
+
+        let session = mgr.get_or_create("nonexistent:key");
+        assert!(session.messages.is_empty());
+        assert_eq!(session.key, "nonexistent:key");
+    }
+
+    #[test]
+    fn test_invalidate_removes_from_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SessionManager::new(dir.path().to_path_buf());
+
+        mgr.get_or_create("k");
+        assert!(mgr.sessions.contains_key("k"));
+
+        mgr.invalidate("k");
+        assert!(!mgr.sessions.contains_key("k"));
+    }
+
+    #[test]
+    fn test_list_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SessionManager::new(dir.path().to_path_buf());
+
+        mgr.get_or_create("cli:interactive");
+        mgr.save("cli:interactive").unwrap();
+
+        mgr.get_or_create("telegram:99");
+        mgr.save("telegram:99").unwrap();
+
+        let list = mgr.list_sessions();
+        assert_eq!(list.len(), 2);
+        // Keys should have colons restored
+        let keys: Vec<&str> = list.iter().map(|s| s.key.as_str()).collect();
+        assert!(keys.contains(&"cli:interactive"));
+        assert!(keys.contains(&"telegram:99"));
+    }
+
+    #[test]
+    fn test_malformed_jsonl_lines_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad_session.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"_type":"metadata","created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:00Z","metadata":{},"last_consolidated":0}
+not valid json
+{"role":"user","content":"hello"}
+{"broken
+{"role":"assistant","content":"hi"}
+"#,
+        )
+        .unwrap();
+
+        let mut mgr = SessionManager::new(dir.path().to_path_buf());
+        let session = mgr.get_or_create("bad_session");
+        // Should have loaded 2 valid messages, skipping the 2 malformed lines
+        assert_eq!(session.messages.len(), 2);
+        assert_eq!(session.messages[0].content, "hello");
+        assert_eq!(session.messages[1].content, "hi");
+    }
+}

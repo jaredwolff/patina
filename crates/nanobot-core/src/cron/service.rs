@@ -303,8 +303,8 @@ impl CronService {
     }
 }
 
-/// Compute the next run time for a schedule.
-fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Result<Option<i64>> {
+/// Compute the next run time for a schedule (public for testing).
+pub(crate) fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Result<Option<i64>> {
     match schedule.kind {
         ScheduleKind::At => {
             // One-time: return if in the future
@@ -338,5 +338,296 @@ fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Result<Option<i64>>
                 Err(_) => Ok(None),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn now_ms() -> i64 {
+        Utc::now().timestamp_millis()
+    }
+
+    // --- compute_next_run tests ---
+
+    #[test]
+    fn test_at_schedule_future() {
+        let future = now_ms() + 60_000;
+        let schedule = CronSchedule {
+            kind: ScheduleKind::At,
+            at_ms: Some(future),
+            every_ms: None,
+            expr: None,
+            tz: None,
+        };
+        let result = compute_next_run(&schedule, now_ms()).unwrap();
+        assert_eq!(result, Some(future));
+    }
+
+    #[test]
+    fn test_at_schedule_past() {
+        let past = now_ms() - 60_000;
+        let schedule = CronSchedule {
+            kind: ScheduleKind::At,
+            at_ms: Some(past),
+            every_ms: None,
+            expr: None,
+            tz: None,
+        };
+        let result = compute_next_run(&schedule, now_ms()).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_every_schedule() {
+        let now = now_ms();
+        let schedule = CronSchedule {
+            kind: ScheduleKind::Every,
+            at_ms: None,
+            every_ms: Some(30_000),
+            expr: None,
+            tz: None,
+        };
+        let result = compute_next_run(&schedule, now).unwrap();
+        assert_eq!(result, Some(now + 30_000));
+    }
+
+    #[test]
+    fn test_every_schedule_zero_interval() {
+        let schedule = CronSchedule {
+            kind: ScheduleKind::Every,
+            at_ms: None,
+            every_ms: Some(0),
+            expr: None,
+            tz: None,
+        };
+        let result = compute_next_run(&schedule, now_ms()).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_cron_schedule_valid() {
+        let schedule = CronSchedule {
+            kind: ScheduleKind::Cron,
+            at_ms: None,
+            every_ms: None,
+            expr: Some("0 9 * * *".into()),
+            tz: None,
+        };
+        let result = compute_next_run(&schedule, now_ms()).unwrap();
+        assert!(result.is_some());
+        assert!(result.unwrap() > now_ms());
+    }
+
+    #[test]
+    fn test_cron_schedule_invalid_expr() {
+        let schedule = CronSchedule {
+            kind: ScheduleKind::Cron,
+            at_ms: None,
+            every_ms: None,
+            expr: Some("not a cron".into()),
+            tz: None,
+        };
+        assert!(compute_next_run(&schedule, now_ms()).is_err());
+    }
+
+    #[test]
+    fn test_cron_schedule_missing_expr() {
+        let schedule = CronSchedule {
+            kind: ScheduleKind::Cron,
+            at_ms: None,
+            every_ms: None,
+            expr: None,
+            tz: None,
+        };
+        assert!(compute_next_run(&schedule, now_ms()).is_err());
+    }
+
+    // --- CronService tests ---
+
+    #[tokio::test]
+    async fn test_add_and_list_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("cron/jobs.json");
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let mut svc = CronService::new(store_path, tx);
+
+        let schedule = CronSchedule {
+            kind: ScheduleKind::Every,
+            at_ms: None,
+            every_ms: Some(60_000),
+            expr: None,
+            tz: None,
+        };
+        let job = svc
+            .add_job("test job", schedule, "do stuff", false, None, None, false)
+            .unwrap();
+        assert_eq!(job.name, "test job");
+        assert!(job.enabled);
+        assert!(job.state.next_run_at_ms.is_some());
+
+        let jobs = svc.list_jobs(false);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].name, "test job");
+    }
+
+    #[tokio::test]
+    async fn test_list_jobs_filters_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("cron/jobs.json");
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let mut svc = CronService::new(store_path, tx);
+
+        let schedule = CronSchedule {
+            kind: ScheduleKind::Every,
+            at_ms: None,
+            every_ms: Some(60_000),
+            expr: None,
+            tz: None,
+        };
+        let job = svc
+            .add_job("j1", schedule.clone(), "m1", false, None, None, false)
+            .unwrap();
+        svc.add_job("j2", schedule, "m2", false, None, None, false)
+            .unwrap();
+        svc.enable_job(&job.id, false);
+
+        assert_eq!(svc.list_jobs(false).len(), 1); // only enabled
+        assert_eq!(svc.list_jobs(true).len(), 2); // all
+    }
+
+    #[tokio::test]
+    async fn test_remove_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("cron/jobs.json");
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let mut svc = CronService::new(store_path, tx);
+
+        let schedule = CronSchedule {
+            kind: ScheduleKind::Every,
+            at_ms: None,
+            every_ms: Some(60_000),
+            expr: None,
+            tz: None,
+        };
+        let job = svc
+            .add_job("to_delete", schedule, "msg", false, None, None, false)
+            .unwrap();
+        assert!(svc.remove_job(&job.id));
+        assert!(svc.list_jobs(true).is_empty());
+
+        // Removing nonexistent job returns false
+        assert!(!svc.remove_job("nonexistent"));
+    }
+
+    #[tokio::test]
+    async fn test_enable_disable_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("cron/jobs.json");
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let mut svc = CronService::new(store_path, tx);
+
+        let schedule = CronSchedule {
+            kind: ScheduleKind::Every,
+            at_ms: None,
+            every_ms: Some(60_000),
+            expr: None,
+            tz: None,
+        };
+        let job = svc
+            .add_job("toggle", schedule, "msg", false, None, None, false)
+            .unwrap();
+
+        // Disable
+        let updated = svc.enable_job(&job.id, false).unwrap();
+        assert!(!updated.enabled);
+
+        // Re-enable
+        let updated = svc.enable_job(&job.id, true).unwrap();
+        assert!(updated.enabled);
+        assert!(updated.state.next_run_at_ms.is_some());
+
+        // Nonexistent job
+        assert!(svc.enable_job("nope", true).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_job_name_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("cron/jobs.json");
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let mut svc = CronService::new(store_path, tx);
+
+        let schedule = CronSchedule {
+            kind: ScheduleKind::Every,
+            at_ms: None,
+            every_ms: Some(60_000),
+            expr: None,
+            tz: None,
+        };
+        let long_name = "a".repeat(50);
+        let job = svc
+            .add_job(&long_name, schedule, "msg", false, None, None, false)
+            .unwrap();
+        assert_eq!(job.name.len(), 30);
+    }
+
+    #[tokio::test]
+    async fn test_persistence_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("cron/jobs.json");
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let mut svc = CronService::new(store_path.clone(), tx.clone());
+
+        let schedule = CronSchedule {
+            kind: ScheduleKind::Every,
+            at_ms: None,
+            every_ms: Some(60_000),
+            expr: None,
+            tz: None,
+        };
+        let job = svc
+            .add_job(
+                "persist",
+                schedule,
+                "hello",
+                true,
+                Some("tg".into()),
+                Some("123".into()),
+                false,
+            )
+            .unwrap();
+
+        // Load into a new service
+        let mut svc2 = CronService::new(store_path, tx);
+        svc2.start().await.unwrap();
+
+        let jobs = svc2.list_jobs(true);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, job.id);
+        assert_eq!(jobs[0].name, "persist");
+        assert_eq!(jobs[0].payload.message, "hello");
+        assert!(jobs[0].payload.deliver);
+        assert_eq!(jobs[0].payload.channel, Some("tg".into()));
+        assert_eq!(jobs[0].payload.to, Some("123".into()));
+    }
+
+    // --- CronJob/CronStore serialization tests ---
+
+    #[test]
+    fn test_cron_store_default() {
+        let store = CronStore::default();
+        assert_eq!(store.version, 1);
+        assert!(store.jobs.is_empty());
+    }
+
+    #[test]
+    fn test_schedule_kind_serialization() {
+        let json = serde_json::to_string(&ScheduleKind::Cron).unwrap();
+        assert_eq!(json, r#""cron""#);
+
+        let kind: ScheduleKind = serde_json::from_str(r#""every""#).unwrap();
+        assert_eq!(kind, ScheduleKind::Every);
     }
 }
