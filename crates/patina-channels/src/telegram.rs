@@ -244,29 +244,34 @@ impl Channel for TelegramChannel {
         // Parse chat_id — format is "chat_id" or "chat_id:thread_id"
         let (chat_id, thread_id) = parse_chat_and_thread(&msg.chat_id, &msg.metadata)?;
 
-        // Try sending as HTML first
-        let html_content = markdown_to_telegram_html(&msg.content);
-        let mut request = self
-            .bot
-            .send_message(ChatId(chat_id), &html_content)
-            .parse_mode(ParseMode::Html);
+        // Split into chunks if the message exceeds Telegram's limit
+        let chunks = split_message(&msg.content, 4096);
 
-        if let Some(tid) = thread_id {
-            request = request.message_thread_id(tid);
-        }
+        for &chunk in &chunks {
+            // Try sending as HTML first
+            let html_content = markdown_to_telegram_html(chunk);
+            let mut request = self
+                .bot
+                .send_message(ChatId(chat_id), &html_content)
+                .parse_mode(ParseMode::Html);
 
-        match request.await {
-            Ok(_) => {}
-            Err(e) => {
-                // Fallback to plain text if HTML parsing fails
-                warn!("HTML parse failed, falling back to plain text: {e}");
-                let mut fallback = self.bot.send_message(ChatId(chat_id), &msg.content);
-                if let Some(tid) = thread_id {
-                    fallback = fallback.message_thread_id(tid);
-                }
-                if let Err(e2) = fallback.await {
-                    error!("Error sending Telegram message: {e2}");
-                    return Err(e2.into());
+            if let Some(tid) = thread_id {
+                request = request.message_thread_id(tid);
+            }
+
+            match request.await {
+                Ok(_) => {}
+                Err(e) => {
+                    // Fallback to plain text if HTML parsing fails
+                    warn!("HTML parse failed, falling back to plain text: {e}");
+                    let mut fallback = self.bot.send_message(ChatId(chat_id), chunk);
+                    if let Some(tid) = thread_id {
+                        fallback = fallback.message_thread_id(tid);
+                    }
+                    if let Err(e2) = fallback.await {
+                        error!("Error sending Telegram message: {e2}");
+                        return Err(e2.into());
+                    }
                 }
             }
         }
@@ -538,6 +543,37 @@ async fn handle_message(
     }
 }
 
+/// Split a message into chunks that fit within Telegram's character limit.
+///
+/// Tries to break at newline boundaries to keep output readable.
+/// Falls back to splitting at the limit if no newline is found.
+fn split_message(text: &str, max_len: usize) -> Vec<&str> {
+    if text.len() <= max_len {
+        return vec![text];
+    }
+
+    let mut chunks = Vec::new();
+    let mut remaining = text;
+
+    while !remaining.is_empty() {
+        if remaining.len() <= max_len {
+            chunks.push(remaining);
+            break;
+        }
+
+        // Find the last newline within the limit
+        let split_at = remaining[..max_len]
+            .rfind('\n')
+            .map(|pos| pos + 1) // include the newline in the current chunk
+            .unwrap_or(max_len);
+
+        chunks.push(&remaining[..split_at]);
+        remaining = &remaining[split_at..];
+    }
+
+    chunks
+}
+
 /// Check if a sender is allowed based on the allow_from list.
 ///
 /// Matches against the full sender_id string, the numeric ID part,
@@ -618,6 +654,31 @@ mod tests {
     fn parse_chat_and_thread_invalid_chat_id() {
         let metadata = HashMap::new();
         assert!(parse_chat_and_thread("not_a_number", &metadata).is_err());
+    }
+
+    #[test]
+    fn split_message_short() {
+        let chunks = split_message("hello", 4096);
+        assert_eq!(chunks, vec!["hello"]);
+    }
+
+    #[test]
+    fn split_message_at_newline() {
+        let line = "a".repeat(100);
+        let text = format!("{line}\n{line}\n{line}");
+        let chunks = split_message(&text, 202);
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].ends_with('\n'));
+        assert_eq!(chunks[1], line);
+    }
+
+    #[test]
+    fn split_message_no_newline() {
+        let text = "a".repeat(5000);
+        let chunks = split_message(&text, 4096);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), 4096);
+        assert_eq!(chunks[1].len(), 904);
     }
 
     #[test]
