@@ -55,7 +55,7 @@ Before implementing or modifying any feature:
 | Phase 1 | Core Foundation (config, session, bus, LLM, tools, agent loop, CLI) | ✅ Complete |
 | Phase 2 | Full Agent Features (memory, skills, web tools, subagents, cron, heartbeat) | ✅ Complete |
 | Phase 3 | Channel Architecture + Telegram | ✅ Complete |
-| Phase 4 | Polish & Ship (onboarding, error handling, testing, packaging) | 🚧 In Progress |
+| Phase 4 | Polish & Ship (onboarding, error handling, testing, packaging) | ⚠️ Nearly Complete (error audit + integration test remain) |
 | Future | Additional channels (Discord, Slack, Email, etc.) | ❌ Not started |
 | Future | Semantic memory with vector databases | ❌ Not started |
 
@@ -171,7 +171,10 @@ pub trait Tool: Send + Sync {
 Current tools:
 - **filesystem**: `read_file`, `write_file`, `edit_file`, `list_dir` (optional workspace restriction)
 - **shell**: `exec_command` (runs in workspace dir, configurable timeout)
-- **web**, **message**, **spawn**, **cron**: Defined but not yet implemented
+- **web**: `web_search` (Brave API), `web_fetch` (readability extraction)
+- **message**: `message` (send to chat channels)
+- **spawn**: `spawn` (background subagent tasks)
+- **cron**: `cron_add`, `cron_remove`, `cron_list` (scheduled jobs)
 
 Tools are registered in `main.rs` during `build_agent_loop()`.
 
@@ -221,14 +224,16 @@ Uses `tracing` with env filter (default: info level). Set `RUST_LOG=debug` for v
 - Model reasoning tokens (from providers that support it)
 - Session load/save operations
 
-### Gateway Mode (Not Yet Implemented)
+### Gateway Mode (nanobot-cli/src/main.rs — `run_gateway()`)
 
-The `serve` command is a placeholder. Future implementation will:
-1. Initialize `ChannelManager`
-2. Register enabled channels from config
-3. Start each channel's listener (e.g., Telegram long polling)
-4. Route inbound messages through `MessageBus`
-5. Run one `AgentLoop` per session concurrently
+The `serve` command starts the full gateway:
+1. Initializes `ChannelManager` and registers enabled channels
+2. Starts Telegram long polling (with Parakeet transcription)
+3. Starts cron service and heartbeat (if enabled)
+4. Routes inbound messages through `MessageBus` to `AgentLoop`
+5. Handles `/new`, `/help`, `/start` slash commands
+6. Dispatches outbound messages to appropriate channels
+7. Graceful shutdown on Ctrl-C
 
 ## Implementation Status
 
@@ -254,14 +259,19 @@ Implemented:
 - ✅ Telegram channel (teloxide, voice transcription, media handling)
 - ✅ Voice transcription (local Parakeet TDT + Groq fallback)
 - ✅ Gateway mode (`serve` command with Telegram)
+- ✅ Onboarding wizard (interactive + `--non-interactive`)
+- ✅ Status/interrupt commands (flag-file interrupt mechanism)
+- ✅ Binary packaging (release script + checksums)
+- ✅ Cross-compilation (CI builds Linux, macOS, Windows)
 
-Not yet implemented:
+Phase 4 remaining:
+- ⚠️ Error handling audit — some `unwrap()` calls in production paths need review
+- ⚠️ Telegram integration test — only unit tests exist, no end-to-end test
+
+Not yet implemented (future):
 - ❌ Additional channels (Discord, Slack, WhatsApp, QQ, DingTalk, Feishu, MoChat, Email)
-- ❌ Onboarding wizard (Phase 4)
-- ❌ Status/interrupt commands (Phase 4)
-- ❌ Cross-compilation packaging (Phase 4)
-- ❌ Semantic memory with vector databases (future)
-- ❌ Claude CLI provider integration (future) - requires custom subprocess-based provider
+- ❌ Semantic memory with vector databases
+- ❌ Claude CLI provider integration — requires custom subprocess-based provider
 - ❌ Security improvements from LocalGPT (sandbox, content sanitization, signed policies) — see `LOCALGPT_COMPARISON.md`
 - ❌ Monty code execution mode — see `MONTY_CODE_MODE_PLAN.md`
 
@@ -313,33 +323,28 @@ Standard formats for interoperability:
 - **Session JSONL**: Metadata line followed by message lines
 - **Session keys**: Format `"{channel}:{chat_id}"`
 
-### Skills Architecture (Future)
+### Skills Architecture (nanobot-core/src/agent/skills.rs)
 
-Three-layer design:
-1. **Markdown skills** (preferred): `SKILL.md` files with YAML frontmatter — LLM interprets instructions, no compilation needed
-2. **Bundled scripts**: Python/Bash scripts in `scripts/` dir — executed via `exec` tool
+Three-layer design (layers 1 and 2 implemented):
+1. **Markdown skills** (implemented): `SKILL.md` files with YAML frontmatter — LLM interprets instructions. Skills loader parses frontmatter, checks requirements (`bins`, `env` via `which` crate and `std::env`), progressive loading (metadata always in context, full body on-demand via `read_file`). Always-loaded skills injected into system prompt.
+2. **Bundled scripts** (implemented): Python/Bash scripts in `scripts/` dir — executed via `exec` tool
 3. **WASM plugins** (deferred): Native tool plugins with sandboxed execution
 
-Current implementation: None yet (Phase 2). When implementing skills loader:
-- Parse YAML frontmatter from SKILL.md
-- Check requirements (`bins`, `env`)
-- Progressive loading: metadata always in context, full body on-demand
+### Channel Architecture (nanobot-channels/)
 
-### Channel Architecture (Future)
-
-The `Channel` trait (not yet implemented):
+The `Channel` trait (`base.rs`) and `ChannelManager` (`manager.rs`) are fully implemented:
 ```rust
 #[async_trait]
 pub trait Channel: Send + Sync {
     fn name(&self) -> &str;
-    async fn start(&mut self, bus: mpsc::Sender<InboundMessage>) -> Result<()>;
-    async fn stop(&mut self) -> Result<()>;
+    async fn start(&self, bus: mpsc::Sender<InboundMessage>) -> Result<()>;
+    async fn stop(&self) -> Result<()>;
     async fn send(&self, msg: OutboundMessage) -> Result<()>;
     fn is_allowed(&self, sender_id: &str) -> bool;
 }
 ```
 
-Priority order: Telegram → Discord → Slack → Email.
+Currently implemented: Telegram. Future: Discord → Slack → Email.
 
 ## Code Quality Guidelines
 

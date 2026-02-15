@@ -578,6 +578,13 @@ mod tests {
     }
 
     #[test]
+    fn allowlist_simple_id_without_pipe() {
+        assert!(is_sender_allowed("999", &[String::from("999")]));
+        assert!(!is_sender_allowed("999", &[String::from("111")]));
+        assert!(is_sender_allowed("999", &[]));
+    }
+
+    #[test]
     fn parse_chat_and_thread_uses_composite_and_metadata_fallback() {
         let mut metadata = HashMap::new();
         metadata.insert("message_thread_id".into(), serde_json::json!(42));
@@ -589,6 +596,69 @@ mod tests {
         let (chat_id, thread_id) = parse_chat_and_thread("1001", &metadata).unwrap();
         assert_eq!(chat_id, 1001);
         assert_eq!(thread_id.map(|t| (t.0).0), Some(42));
+    }
+
+    #[test]
+    fn parse_chat_and_thread_no_thread() {
+        let metadata = HashMap::new();
+        let (chat_id, thread_id) = parse_chat_and_thread("1001", &metadata).unwrap();
+        assert_eq!(chat_id, 1001);
+        assert!(thread_id.is_none());
+    }
+
+    #[test]
+    fn parse_chat_and_thread_negative_chat_id() {
+        let metadata = HashMap::new();
+        let (chat_id, thread_id) = parse_chat_and_thread("-1001234:5", &metadata).unwrap();
+        assert_eq!(chat_id, -1001234);
+        assert_eq!(thread_id.map(|t| (t.0).0), Some(5));
+    }
+
+    #[test]
+    fn parse_chat_and_thread_invalid_chat_id() {
+        let metadata = HashMap::new();
+        assert!(parse_chat_and_thread("not_a_number", &metadata).is_err());
+    }
+
+    #[test]
+    fn get_extension_from_mime() {
+        assert_eq!(
+            TelegramChannel::get_extension("image", Some("image/png")),
+            ".png"
+        );
+        assert_eq!(
+            TelegramChannel::get_extension("image", Some("image/gif")),
+            ".gif"
+        );
+        assert_eq!(
+            TelegramChannel::get_extension("voice", Some("audio/ogg")),
+            ".ogg"
+        );
+        assert_eq!(
+            TelegramChannel::get_extension("audio", Some("audio/mpeg")),
+            ".mp3"
+        );
+    }
+
+    #[test]
+    fn get_extension_fallback_by_media_type() {
+        assert_eq!(TelegramChannel::get_extension("image", None), ".jpg");
+        assert_eq!(TelegramChannel::get_extension("voice", None), ".ogg");
+        assert_eq!(TelegramChannel::get_extension("audio", None), ".mp3");
+        assert_eq!(TelegramChannel::get_extension("document", None), "");
+    }
+
+    #[test]
+    fn new_channel_requires_token() {
+        let config = TelegramConfig {
+            enabled: true,
+            token: String::new(),
+            ..Default::default()
+        };
+        let result = TelegramChannel::new(config, None);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("token"));
     }
 }
 

@@ -149,9 +149,10 @@ impl SessionManager {
             };
             self.sessions.insert(key.into(), session);
         }
+        // Safety: we just inserted the key above if it was missing
         self.sessions
             .get_mut(key)
-            .expect("session inserted but missing from cache")
+            .expect("session just inserted but missing from cache")
     }
 
     /// Get or create a session, returning I/O errors when load fails.
