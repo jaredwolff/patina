@@ -2,6 +2,41 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Table of Contents
+- [Project Overview](#project-overview)
+- [Python Reference Comparison](#python-reference-comparison)
+  - [How to Compare](#how-to-compare)
+  - [Module Mapping (Python → Rust)](#module-mapping-python--rust)
+  - [Rewrite Plan Status](#rewrite-plan-status-from-rust_rewrite_planmd)
+  - [What to Check When Making Changes](#what-to-check-when-making-changes)
+  - [Known Differences (Intentional)](#known-differences-intentional)
+- [Workspace Structure](#workspace-structure)
+- [Build and Test Commands](#build-and-test-commands)
+- [Configuration](#configuration)
+- [Architecture](#architecture)
+  - [Agent Loop](#agent-loop-nanobot-coresrcagentlooprs)
+  - [Sessions](#sessions-nanobot-coresrcsessionrs)
+  - [Tool System](#tool-system-nanobot-coresrctools)
+  - [Message Bus](#message-bus-nanobot-coresrcbusrs)
+  - [Provider Selection](#provider-selection-nanobot-clisrcmainrs)
+  - [Context Builder](#context-builder-nanobot-coresrcagentcontextrs)
+- [Development Notes](#development-notes)
+  - [Session Persistence Format](#session-persistence-format)
+  - [Error Handling](#error-handling)
+  - [Logging](#logging)
+  - [Gateway Mode](#gateway-mode)
+- [Implementation Status](#implementation-status)
+- [Future Improvements](#future-improvements)
+- [Design Principles](#design-principles)
+  - [Local-First Philosophy](#local-first-philosophy)
+  - [Configuration and Session Formats](#configuration-and-session-formats)
+  - [Skills Architecture](#skills-architecture-nanobot-coresrcagentskillsrs)
+  - [Channel Architecture](#channel-architecture-nanobot-channels)
+- [Code Quality Guidelines](#code-quality-guidelines)
+- [Testing Guidelines](#testing-guidelines)
+- [Documentation Updates](#documentation-updates)
+- [Git Commit Workflow](#git-commit-workflow)
+
 ## Project Overview
 
 Nanobot-rs is a Rust rewrite of the Python nanobot framework (`../nanobot/`). It is a lightweight AI agent framework designed to run LLM agents with tool-calling capabilities across multiple chat channels. It supports interactive CLI mode and gateway mode for persistent messaging integrations.
@@ -77,7 +112,7 @@ When modifying any Rust module, **proactively verify against Python**:
 These divergences from Python are by design:
 - **LLM providers**: Rust uses `rig-core` (19 providers) instead of `litellm` (50+). Covers all major providers. Note: rig-core does not support claude-cli (subprocess-based) - this would require a custom provider implementation. Future: Add claude-cli provider support for local Claude Code integration.
 - **Voice transcription**: Rust uses local-first Parakeet TDT with Groq as fallback. Python uses Groq only.
-- **Provider priority**: Rust defaults to Ollama (local-first). Python uses litellm's routing.
+- **Provider priority**: Rust prioritizes OpenAI-compatible (llama.cpp, vLLM) for local-first deployment, with Ollama as fallback. Python uses litellm's routing.
 - **Binary deployment**: Single static binary vs Python venv.
 
 ## Workspace Structure
@@ -107,7 +142,7 @@ cargo run --bin nanobot-cli -- agent
 # Run a single message (non-interactive)
 cargo run --bin nanobot-cli -- agent -m "your message here"
 
-# Start gateway mode (currently unimplemented)
+# Start gateway mode
 cargo run --bin nanobot-cli -- serve
 
 # Specify custom config
@@ -187,11 +222,13 @@ Async pub/sub system connecting channels to the agent:
 
 Session keys are derived as `"{channel}:{chat_id}"`.
 
-### Provider Selection (nanobot-cli/src/main.rs:78-118)
+### Provider Selection (nanobot-cli/src/main.rs)
 
-The `create_model()` function prioritizes providers:
-1. **OpenAI-compatible** (if `providers.openai.apiBase` or `apiKey` set): Supports llama.cpp, vLLM, OpenAI API
-2. **Ollama** (default): Local-first provider at `http://localhost:11434`
+The `create_model()` function prioritizes providers in this order:
+1. **OpenAI-compatible with custom apiBase** (llama.cpp, vLLM, etc.) - checked first for local-first deployment
+2. **Auto-detect by model name prefix** (claude-* → Anthropic, gpt-* → OpenAI, etc.)
+3. **Explicitly configured cloud providers** (DeepSeek, Gemini, Groq, OpenRouter, etc.)
+4. **Ollama** - final fallback when no other provider is configured
 
 Note: The codebase uses `rig-core` 0.30 for LLM abstraction. The `CompletionModelHandle` pattern is used to work around lifetime issues.
 
@@ -224,9 +261,9 @@ Uses `tracing` with env filter (default: info level). Set `RUST_LOG=debug` for v
 - Model reasoning tokens (from providers that support it)
 - Session load/save operations
 
-### Gateway Mode (nanobot-cli/src/main.rs — `run_gateway()`)
+### Gateway Mode
 
-The `serve` command starts the full gateway:
+The `serve` command (implemented in `nanobot-cli/src/main.rs` via `run_gateway()`) starts the full gateway:
 1. Initializes `ChannelManager` and registers enabled channels
 2. Starts Telegram long polling (with Parakeet transcription)
 3. Starts cron service and heartbeat (if enabled)
@@ -268,12 +305,12 @@ Phase 4 remaining:
 - ⚠️ Error handling audit — some `unwrap()` calls in production paths need review
 - ⚠️ Telegram integration test — only unit tests exist, no end-to-end test
 
-Not yet implemented (future):
-- ❌ Additional channels (Discord, Slack, WhatsApp, QQ, DingTalk, Feishu, MoChat, Email)
+Future enhancements (see "Future Improvements" section below for details):
+- ❌ Additional channels (Discord, Slack, Email)
 - ❌ Semantic memory with vector databases
-- ❌ Claude CLI provider integration — requires custom subprocess-based provider
-- ❌ Security improvements from LocalGPT (sandbox, content sanitization, signed policies) — see `LOCALGPT_COMPARISON.md`
-- ❌ Monty code execution mode — see `MONTY_CODE_MODE_PLAN.md`
+- ❌ Claude CLI provider integration
+- ❌ Security improvements from LocalGPT (see `LOCALGPT_COMPARISON.md`)
+- ❌ Monty code execution mode (see `MONTY_CODE_MODE_PLAN.md`)
 
 ## Future Improvements
 
@@ -309,10 +346,12 @@ Example: "Read all .rs files and count total lines"
 
 ### Local-First Philosophy
 
-Provider priority order (see main.rs:78-118):
-1. **Ollama** (local, no API key needed) — default
-2. **OpenAI-compatible** (vLLM, llama.cpp, LocalAI via custom apiBase)
-3. Cloud providers (Anthropic, OpenAI, DeepSeek, etc.) — configured fallbacks
+Provider priority order (see `create_model()` in nanobot-cli/src/main.rs):
+1. **OpenAI-compatible with custom apiBase** (llama.cpp, vLLM, LocalAI) - prioritized for local deployment
+2. **Auto-detected cloud providers** (Anthropic, OpenAI, DeepSeek, Gemini, etc.) - when API keys configured
+3. **Ollama** (local, no API key needed) - final fallback
+
+By checking OpenAI-compatible servers (like llama.cpp) first, the system defaults to local-first deployment when configured. Ollama serves as a zero-config fallback for users who want to run models locally without setting up llama.cpp.
 
 The agent loop uses rig's `CompletionModel` trait — provider selection is config-driven, not hardcoded.
 
