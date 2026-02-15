@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -117,7 +117,12 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(sessions_dir: PathBuf) -> Self {
-        std::fs::create_dir_all(&sessions_dir).ok();
+        if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
+            tracing::warn!(
+                "Failed to create sessions directory '{}': {e}",
+                sessions_dir.display()
+            );
+        }
         Self {
             sessions_dir,
             sessions: HashMap::new(),
@@ -134,20 +139,41 @@ impl SessionManager {
     /// Get or create a session, loading from disk if it exists.
     pub fn get_or_create(&mut self, key: &str) -> &mut Session {
         if !self.sessions.contains_key(key) {
-            let session = self.load(key).unwrap_or_else(|| Session::new(key.into()));
+            let session = match self.load(key) {
+                Ok(Some(s)) => s,
+                Ok(None) => Session::new(key.into()),
+                Err(e) => {
+                    tracing::error!("Failed to load session '{key}': {e}. Creating a new session.");
+                    Session::new(key.into())
+                }
+            };
             self.sessions.insert(key.into(), session);
         }
-        self.sessions.get_mut(key).unwrap()
+        self.sessions
+            .get_mut(key)
+            .expect("session inserted but missing from cache")
+    }
+
+    /// Get or create a session, returning I/O errors when load fails.
+    pub fn get_or_create_checked(&mut self, key: &str) -> Result<&mut Session> {
+        if !self.sessions.contains_key(key) {
+            let session = self.load(key)?.unwrap_or_else(|| Session::new(key.into()));
+            self.sessions.insert(key.into(), session);
+        }
+        self.sessions
+            .get_mut(key)
+            .context("session inserted but missing from cache")
     }
 
     /// Load a session from its JSONL file.
-    fn load(&self, key: &str) -> Option<Session> {
+    fn load(&self, key: &str) -> Result<Option<Session>> {
         let path = self.session_path(key);
         if !path.exists() {
-            return None;
+            return Ok(None);
         }
 
-        let file = std::fs::File::open(&path).ok()?;
+        let file = std::fs::File::open(&path)
+            .with_context(|| format!("failed to open session file '{}'", path.display()))?;
         let reader = std::io::BufReader::new(file);
 
         let mut messages = Vec::new();
@@ -199,14 +225,14 @@ impl SessionManager {
             }
         }
 
-        Some(Session {
+        Ok(Some(Session {
             key: key.into(),
             messages,
             created_at,
             updated_at: Utc::now(),
             metadata,
             last_consolidated,
-        })
+        }))
     }
 
     /// Save a session to its JSONL file.

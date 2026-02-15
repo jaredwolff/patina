@@ -156,6 +156,9 @@ impl Channel for TelegramChannel {
             }
             Err(e) => {
                 error!("Failed to get bot info: {e}");
+                return Err(anyhow::anyhow!(
+                    "failed to verify Telegram bot identity: {e}"
+                ));
             }
         }
 
@@ -527,6 +530,7 @@ async fn handle_message(
         content,
         media: media_paths,
         metadata,
+        timestamp: chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
     };
 
     if let Err(e) = inbound_tx.send(inbound).await {

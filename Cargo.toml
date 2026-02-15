@@ -30,6 +30,8 @@ rustyline = "15"
 dirs = "6"
 regex = "1"
 reqwest = { version = "0.12", features = ["json", "multipart", "blocking"] }
+base64 = "0.22"
+mime_guess = "2"
 which = "7"
 html-escape = "0.2"
 croner = "2"

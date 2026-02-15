@@ -23,6 +23,8 @@ which = { workspace = true }
 html-escape = { workspace = true }
 croner = { workspace = true }
 uuid = { workspace = true }
+base64 = { workspace = true }
+mime_guess = { workspace = true }
 readability = "0.3.0"
 url = "2"
 

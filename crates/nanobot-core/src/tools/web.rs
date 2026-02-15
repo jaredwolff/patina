@@ -283,7 +283,8 @@ impl Tool for WebFetchTool {
         {
             // HTML content — extract with readability, fall back to regex
             let parsed_url = url::Url::parse(&final_url)
-                .unwrap_or_else(|_| url::Url::parse("http://localhost").unwrap());
+                .or_else(|_| url::Url::parse("http://localhost"))
+                .map_err(|e| anyhow::anyhow!("failed to parse URL for extraction: {e}"))?;
             let readability_result =
                 readability::extractor::extract(&mut body.as_bytes(), &parsed_url);
             match readability_result {

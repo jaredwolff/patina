@@ -103,6 +103,7 @@ async fn tick(workspace: &Path, inbound_tx: &mpsc::Sender<InboundMessage>) -> an
         content: HEARTBEAT_PROMPT.to_string(),
         media: Vec::new(),
         metadata: HashMap::new(),
+        timestamp: crate::bus::default_timestamp(),
     };
 
     inbound_tx

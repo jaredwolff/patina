@@ -91,6 +91,7 @@ impl Tool for MessageTool {
             channel: channel.clone(),
             chat_id: chat_id.clone(),
             content: content.to_string(),
+            reply_to: None,
             metadata: HashMap::new(),
         };
 

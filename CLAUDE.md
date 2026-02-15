@@ -4,9 +4,81 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Nanobot-rs is a lightweight AI agent framework written in Rust, designed to run LLM agents with tool-calling capabilities across multiple chat channels. It supports interactive CLI mode and gateway mode for persistent messaging integrations.
+Nanobot-rs is a Rust rewrite of the Python nanobot framework (`../nanobot/`). It is a lightweight AI agent framework designed to run LLM agents with tool-calling capabilities across multiple chat channels. It supports interactive CLI mode and gateway mode for persistent messaging integrations.
 
-**Inspired by the nanobot concept**, this is a standalone Rust implementation optimized for low memory usage, fast startup, and local-first inference.
+The Python version at `../nanobot/` is the **reference implementation**. The Rust version aims for feature parity, optimized for low memory usage, fast startup, and local-first inference.
+
+## Python Reference Comparison
+
+**Always compare with the Python implementation** when working on nanobot-rs. The Python codebase at `../nanobot/` is the source of truth for behavior and features.
+
+### How to Compare
+
+Before implementing or modifying any feature:
+1. **Read the Python version first** — check `../nanobot/` for the equivalent module
+2. **Match behavior exactly** — unless there's a documented Rust-specific improvement
+3. **Check the rewrite plan** — see `../RUST_REWRITE_PLAN.md` for architecture decisions and phase status
+4. **Verify parity** — after changes, confirm the Rust version handles the same edge cases as Python
+
+### Module Mapping (Python → Rust)
+
+| Python Module | Rust Crate/Module | Parity Status |
+|---|---|---|
+| `nanobot/agent/loop.py` | `nanobot-core/src/agent/loop.rs` | ✅ Complete |
+| `nanobot/agent/context.py` | `nanobot-core/src/agent/context.rs` | ✅ Complete |
+| `nanobot/agent/memory.py` | `nanobot-core/src/agent/memory.rs` | ✅ Complete |
+| `nanobot/agent/skills.py` | `nanobot-core/src/agent/skills.rs` | ✅ Complete |
+| `nanobot/agent/subagent.py` | `nanobot-core/src/agent/subagent.rs` | ✅ Complete |
+| `nanobot/agent/tools/` | `nanobot-core/src/tools/` | ✅ Complete (all 12 tools) |
+| `nanobot/config/` | `nanobot-config/` | ✅ Complete |
+| `nanobot/session/` | `nanobot-core/src/session.rs` | ✅ Complete |
+| `nanobot/bus/` | `nanobot-core/src/bus.rs` | ✅ Complete |
+| `nanobot/cron/` | `nanobot-core/src/cron/` | ✅ Complete |
+| `nanobot/heartbeat/` | `nanobot-core/src/heartbeat.rs` | ✅ Complete |
+| `nanobot/providers/` | rig-core (external) | ✅ Complete (19 vs 50+ providers) |
+| `nanobot/providers/transcription.py` | `nanobot-transcribe/` | ✅ Improved (local-first Parakeet + Groq fallback) |
+| `nanobot/channels/telegram.py` | `nanobot-channels/src/telegram.rs` | ✅ Complete |
+| `nanobot/channels/discord.py` | — | ❌ Not started |
+| `nanobot/channels/slack.py` | — | ❌ Not started |
+| `nanobot/channels/whatsapp.py` | — | ❌ Not started |
+| `nanobot/channels/qq.py` | — | ❌ Not started |
+| `nanobot/channels/dingtalk.py` | — | ❌ Not started |
+| `nanobot/channels/feishu.py` | — | ❌ Not started |
+| `nanobot/channels/mochat.py` | — | ❌ Not started |
+| `nanobot/channels/email.py` | — | ❌ Not started |
+| `nanobot/cli/` | `nanobot-cli/` | ✅ Complete |
+
+### Rewrite Plan Status (from `../RUST_REWRITE_PLAN.md`)
+
+| Phase | Description | Status |
+|---|---|---|
+| Phase 1 | Core Foundation (config, session, bus, LLM, tools, agent loop, CLI) | ✅ Complete |
+| Phase 2 | Full Agent Features (memory, skills, web tools, subagents, cron, heartbeat) | ✅ Complete |
+| Phase 3 | Channel Architecture + Telegram | ✅ Complete |
+| Phase 4 | Polish & Ship (onboarding, error handling, testing, packaging) | 🚧 In Progress |
+| Future | Additional channels (Discord, Slack, Email, etc.) | ❌ Not started |
+| Future | Semantic memory with vector databases | ❌ Not started |
+
+### What to Check When Making Changes
+
+When modifying any Rust module, **proactively verify against Python**:
+
+- **Agent loop changes** → Read `../nanobot/agent/loop.py` — check iteration limits, error handling, tool call format, response assembly
+- **Tool changes** → Read the corresponding `../nanobot/agent/tools/*.py` — check parameter schemas match, error messages are similar, edge cases handled
+- **Session changes** → Read `../nanobot/session/manager.py` — verify JSONL format compatibility (files must be interchangeable)
+- **Config changes** → Read `../nanobot/config/schema.py` — field names, defaults, and validation must match
+- **Channel changes** → Read `../nanobot/channels/telegram.py` — check message formatting, media handling, command routing
+- **Bus/routing changes** → Read `../nanobot/bus/` — verify session key format (`{channel}:{chat_id}`)
+- **Memory changes** → Read `../nanobot/agent/memory.py` — check consolidation logic, MEMORY.md/HISTORY.md format
+- **Skills changes** → Read `../nanobot/agent/skills.py` — check YAML frontmatter parsing, progressive loading behavior
+
+### Known Differences (Intentional)
+
+These divergences from Python are by design:
+- **LLM providers**: Rust uses `rig-core` (19 providers) instead of `litellm` (50+). Covers all major providers. Note: rig-core does not support claude-cli (subprocess-based) - this would require a custom provider implementation. Future: Add claude-cli provider support for local Claude Code integration.
+- **Voice transcription**: Rust uses local-first Parakeet TDT with Groq as fallback. Python uses Groq only.
+- **Provider priority**: Rust defaults to Ollama (local-first). Python uses litellm's routing.
+- **Binary deployment**: Single static binary vs Python venv.
 
 ## Workspace Structure
 
@@ -160,24 +232,68 @@ The `serve` command is a placeholder. Future implementation will:
 
 ## Implementation Status
 
-Currently at **Phase 1: Core Foundation**. Implemented:
+**Phases 1-3 complete. Phase 4 in progress.** See `../RUST_REWRITE_PLAN.md` for full plan.
+
+Core agent (all tools, memory, skills, cron, heartbeat, subagents) and Telegram channel are fully implemented. The main remaining gaps are additional channel integrations and Phase 4 polish items.
+
+Implemented:
 - ✅ Config loading (JSON with camelCase, serde)
 - ✅ Session persistence (JSONL, Python-compatible)
 - ✅ Message bus (tokio mpsc/broadcast)
 - ✅ LLM integration via rig-core (Ollama default, OpenAI-compatible support)
-- ✅ Tool system (registry + basic filesystem/shell tools)
+- ✅ Tool system (registry + all 12 tools: filesystem, shell, web, message, spawn, cron)
 - ✅ Agent loop (LLM ↔ tool iteration)
 - ✅ Context builder (system prompt + message history)
 - ✅ CLI (interactive mode with rustyline)
+- ✅ Memory consolidation (MEMORY.md/HISTORY.md summarization)
+- ✅ Skills loader (YAML frontmatter, progressive loading)
+- ✅ Web tools (Brave search, readability extraction)
+- ✅ Subagent system (background task spawning)
+- ✅ Cron service
+- ✅ Heartbeat
+- ✅ Telegram channel (teloxide, voice transcription, media handling)
+- ✅ Voice transcription (local Parakeet TDT + Groq fallback)
+- ✅ Gateway mode (`serve` command with Telegram)
 
 Not yet implemented:
-- ❌ Memory consolidation (MEMORY.md/HISTORY.md summarization)
-- ❌ Skills loader (YAML frontmatter, progressive loading)
-- ❌ Web tools (Brave search, readability extraction)
-- ❌ Subagent system (background task spawning)
-- ❌ Cron service
-- ❌ Heartbeat
-- ❌ Gateway mode (channel integrations)
+- ❌ Additional channels (Discord, Slack, WhatsApp, QQ, DingTalk, Feishu, MoChat, Email)
+- ❌ Onboarding wizard (Phase 4)
+- ❌ Status/interrupt commands (Phase 4)
+- ❌ Cross-compilation packaging (Phase 4)
+- ❌ Semantic memory with vector databases (future)
+- ❌ Claude CLI provider integration (future) - requires custom subprocess-based provider
+- ❌ Security improvements from LocalGPT (sandbox, content sanitization, signed policies) — see `LOCALGPT_COMPARISON.md`
+- ❌ Monty code execution mode — see `MONTY_CODE_MODE_PLAN.md`
+
+## Future Improvements
+
+See these planning documents for detailed future improvements:
+
+### LOCALGPT_COMPARISON.md
+Comprehensive comparison with LocalGPT (~23K LOC) identifying security and memory improvements:
+- **P0 Priority**: Kernel sandbox (Landlock + seccomp), content sanitization pipeline
+- **P1 Priority**: Memory search with FTS5 + embeddings, signed security policies (LocalGPT.md)
+- **P2 Priority**: TurnGate concurrency control, security audit log
+- **P3 Priority**: Claude CLI provider, additional provider improvements
+
+Key features to adopt:
+- Kernel-enforced sandbox for shell execution (Landlock on Linux, multi-platform)
+- SQLite FTS5 + sqlite-vec for semantic memory search with local embeddings (fastembed)
+- Content sanitization to prevent prompt injection attacks
+- Signed workspace security policies with HMAC verification
+- Hash-chained security audit log
+
+### MONTY_CODE_MODE_PLAN.md
+Plan to integrate Monty's Python execution engine as alternative to tool calling:
+- **Execution modes**: Traditional tool calling vs code mode vs hybrid
+- **Benefits**: Reduce LLM round trips by 50-90%, enable natural control flow (loops, conditionals)
+- **Implementation**: 5-phase plan (~2-3 weeks), backward compatible
+- **Security**: Monty sandbox with resource limits, type stubs for tools
+- **Use case**: Complex multi-step tasks that are awkward as sequential tool calls
+
+Example: "Read all .rs files and count total lines"
+- Tool mode: 10+ LLM round trips (list_dir → read_file × N → count)
+- Code mode: 1 LLM call generates Python loop, executes locally
 
 ## Design Principles
 

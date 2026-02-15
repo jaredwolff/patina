@@ -109,6 +109,7 @@ impl SubagentManager {
                 chat_id: format!("{origin_channel}:{origin_chat_id}"),
                 content: announcement,
                 media: Vec::new(),
+                timestamp: crate::bus::default_timestamp(),
                 metadata: {
                     let mut m = HashMap::new();
                     m.insert(
@@ -238,7 +239,7 @@ impl SubagentManager {
         session_key: &str,
         task: &str,
     ) -> Result<String> {
-        agent_loop.process_message(session_key, task).await
+        agent_loop.process_message(session_key, task, None).await
     }
 }
 

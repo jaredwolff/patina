@@ -19,6 +19,7 @@ pub struct ChannelManager {
     channels: Arc<RwLock<HashMap<String, Arc<dyn Channel>>>>,
     outbound_rx: Option<broadcast::Receiver<OutboundMessage>>,
     dispatch_handle: Option<JoinHandle<()>>,
+    channel_handles: Vec<(String, JoinHandle<Result<()>>)>,
 }
 
 impl ChannelManager {
@@ -28,6 +29,7 @@ impl ChannelManager {
             channels: Arc::new(RwLock::new(HashMap::new())),
             outbound_rx: Some(outbound_rx),
             dispatch_handle: None,
+            channel_handles: Vec::new(),
         }
     }
 
@@ -57,13 +59,33 @@ impl ChannelManager {
             let ch = channel.clone();
             let tx = inbound_tx.clone();
             let ch_name = name.clone();
-            tokio::spawn(async move {
-                if let Err(e) = ch.start(tx).await {
-                    error!("Channel {ch_name} failed: {e}");
-                }
-            });
+            let handle = tokio::spawn(async move { ch.start(tx).await });
+            self.channel_handles.push((ch_name, handle));
         }
         drop(channels);
+
+        // Detect immediate startup failures.
+        for (name, handle) in &mut self.channel_handles {
+            if !handle.is_finished() {
+                continue;
+            }
+            let join = handle.await;
+            match join {
+                Ok(Ok(())) => {
+                    warn!("Channel {name} exited during startup without error");
+                }
+                Ok(Err(e)) => {
+                    error!("Channel {name} failed to start: {e}");
+                    return Err(anyhow::anyhow!("channel '{name}' failed to start: {e}"));
+                }
+                Err(e) => {
+                    error!("Channel {name} startup task panicked: {e}");
+                    return Err(anyhow::anyhow!(
+                        "channel '{name}' startup task panicked: {e}"
+                    ));
+                }
+            }
+        }
 
         // Start outbound dispatcher
         if let Some(outbound_rx) = self.outbound_rx.take() {
@@ -89,6 +111,10 @@ impl ChannelManager {
             if let Err(e) = channel.stop().await {
                 warn!("Error stopping channel {name}: {e}");
             }
+        }
+        for (name, handle) in self.channel_handles.drain(..) {
+            handle.abort();
+            info!("Stopped channel task: {name}");
         }
         Ok(())
     }
@@ -176,6 +202,7 @@ mod tests {
                 channel: "telegram".to_string(),
                 chat_id: "1".to_string(),
                 content: "hello".to_string(),
+                reply_to: None,
                 metadata: HashMap::new(),
             })
             .unwrap();
@@ -206,6 +233,7 @@ mod tests {
                 channel: "discord".to_string(),
                 chat_id: "1".to_string(),
                 content: "hello".to_string(),
+                reply_to: None,
                 metadata: HashMap::new(),
             })
             .unwrap();

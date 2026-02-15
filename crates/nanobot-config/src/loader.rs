@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::Config;
 
@@ -39,8 +39,10 @@ pub fn find_config_path() -> PathBuf {
 /// Load configuration from a JSON file.
 pub fn load_config(path: &Path) -> Result<Config> {
     if path.exists() {
-        let contents = std::fs::read_to_string(path)?;
-        let config: Config = serde_json::from_str(&contents)?;
+        let contents = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read config '{}'", path.display()))?;
+        let config: Config = serde_json::from_str(&contents)
+            .with_context(|| format!("failed to parse config '{}'", path.display()))?;
         Ok(config)
     } else {
         Ok(Config::default())
@@ -51,8 +53,14 @@ pub fn load_config(path: &Path) -> Result<Config> {
 pub fn save_config(path: &Path, config: &Config) -> Result<()> {
     let contents = serde_json::to_string_pretty(config)?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create config directory '{}'",
+                parent.to_string_lossy()
+            )
+        })?;
     }
-    std::fs::write(path, contents)?;
+    std::fs::write(path, contents)
+        .with_context(|| format!("failed to write config '{}'", path.display()))?;
     Ok(())
 }

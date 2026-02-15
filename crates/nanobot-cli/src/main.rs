@@ -696,27 +696,37 @@ async fn run_gateway(config: &nanobot_config::Config, workspace: &Path) -> Resul
                         format!("[System: {}] {}", msg.sender_id, msg.content);
 
                     match agent_loop
-                        .process_message(&session_key, &system_content)
+                        .process_message(&session_key, &system_content, None)
                         .await
                     {
                         Ok(response) => {
-                            let _ = bus.outbound_tx.send(OutboundMessage {
+                            if let Err(e) = bus.outbound_tx.send(OutboundMessage {
                                 channel: origin_channel,
                                 chat_id: origin_chat_id,
                                 content: response,
+                                reply_to: None,
                                 metadata: msg.metadata.clone(),
-                            });
+                            }) {
+                                tracing::warn!(
+                                    "Failed to publish outbound system response to bus: {e}"
+                                );
+                            }
                         }
                         Err(e) => {
                             tracing::error!("Error processing system message: {e}");
-                            let _ = bus.outbound_tx.send(OutboundMessage {
+                            if let Err(send_err) = bus.outbound_tx.send(OutboundMessage {
                                 channel: origin_channel,
                                 chat_id: origin_chat_id,
                                 content: format!(
                                     "Background task completed but I couldn't process the result: {e}"
                                 ),
+                                reply_to: None,
                                 metadata: HashMap::new(),
-                            });
+                            }) {
+                                tracing::warn!(
+                                    "Failed to publish outbound system-error response to bus: {send_err}"
+                                );
+                            }
                         }
                     }
                     continue;
@@ -733,53 +743,102 @@ async fn run_gateway(config: &nanobot_config::Config, workspace: &Path) -> Resul
                 let content = msg.content.trim();
                 if content == "/new" {
                     // Consolidate memory and start fresh
-                    let session = agent_loop.sessions.get_or_create(&session_key);
+                    let session = match agent_loop.sessions.get_or_create_checked(&session_key) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::error!("Failed to load session '{session_key}': {e}");
+                            if let Err(send_err) = bus.outbound_tx.send(OutboundMessage {
+                                channel: msg.channel.clone(),
+                                chat_id: msg.chat_id.clone(),
+                                content: format!(
+                                    "I couldn't load your session state: {e}. \
+        Try checking session file permissions."
+                                ),
+                                reply_to: None,
+                                metadata: HashMap::new(),
+                            }) {
+                                tracing::warn!(
+                                    "Failed to publish session-load error response: {send_err}"
+                                );
+                            }
+                            continue;
+                        }
+                    };
                     let has_messages = !session.messages.is_empty();
                     if has_messages {
                         agent_loop.consolidate_memory(&session_key, true).await;
                     }
-                    let session = agent_loop.sessions.get_or_create(&session_key);
+                    let session = match agent_loop.sessions.get_or_create_checked(&session_key) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to reload session '{session_key}' before clear: {e}"
+                            );
+                            continue;
+                        }
+                    };
                     session.clear();
-                    let _ = agent_loop.sessions.save(&session_key);
+                    if let Err(e) = agent_loop.sessions.save(&session_key) {
+                        tracing::warn!("Failed to save cleared session '{session_key}': {e}");
+                    }
                     agent_loop.sessions.invalidate(&session_key);
 
-                    let _ = bus.outbound_tx.send(OutboundMessage {
+                    if let Err(e) = bus.outbound_tx.send(OutboundMessage {
                         channel: msg.channel.clone(),
                         chat_id: msg.chat_id.clone(),
                         content: "New session started. Previous conversation has been saved to memory.".to_string(),
+                        reply_to: None,
                         metadata: msg.metadata.clone(),
-                    });
+                    }) {
+                        tracing::warn!("Failed to publish /new acknowledgement to bus: {e}");
+                    }
                     continue;
                 }
 
                 if content == "/help" || content == "/start" {
-                    let _ = bus.outbound_tx.send(OutboundMessage {
+                    if let Err(e) = bus.outbound_tx.send(OutboundMessage {
                         channel: msg.channel.clone(),
                         chat_id: msg.chat_id.clone(),
                         content: "Hi! I'm nanobot.\n\nSend me a message and I'll respond.\n\nCommands:\n/new - Start a new conversation\n/help - Show this help".to_string(),
+                        reply_to: None,
                         metadata: msg.metadata.clone(),
-                    });
+                    }) {
+                        tracing::warn!("Failed to publish help response to bus: {e}");
+                    }
                     continue;
                 }
 
                 // Process through agent
-                match agent_loop.process_message(&session_key, content).await {
+                let media_opt = if msg.media.is_empty() {
+                    None
+                } else {
+                    Some(msg.media.as_slice())
+                };
+                match agent_loop.process_message(&session_key, content, media_opt).await {
                     Ok(response) => {
-                        let _ = bus.outbound_tx.send(OutboundMessage {
+                        if let Err(e) = bus.outbound_tx.send(OutboundMessage {
                             channel: msg.channel.clone(),
                             chat_id: msg.chat_id.clone(),
                             content: response,
+                            reply_to: None,
                             metadata: msg.metadata.clone(),
-                        });
+                        }) {
+                            tracing::warn!("Failed to publish outbound response to bus: {e}");
+                        }
                     }
                     Err(e) => {
                         tracing::error!("Error processing message: {e}");
-                        let _ = bus.outbound_tx.send(OutboundMessage {
+                        if let Err(send_err) = bus.outbound_tx.send(OutboundMessage {
                             channel: msg.channel.clone(),
                             chat_id: msg.chat_id.clone(),
                             content: format!("Sorry, I encountered an error: {e}"),
+                            reply_to: None,
                             metadata: HashMap::new(),
-                        });
+                        }) {
+                            tracing::warn!(
+                                "Failed to publish outbound error response to bus: {send_err}"
+                            );
+                        }
                     }
                 }
             }
@@ -810,7 +869,9 @@ async fn run_single_message(
     session_key: &str,
     message: &str,
 ) -> Result<()> {
-    let response = agent_loop.process_message(session_key, message).await?;
+    let response = agent_loop
+        .process_message(session_key, message, None)
+        .await?;
     render_markdown(&response);
     Ok(())
 }
@@ -881,7 +942,17 @@ async fn run_interactive(
                     }
                     "/new" => {
                         // Consolidate current session before clearing
-                        let session = agent_loop.sessions.get_or_create(session_key);
+                        let session = match agent_loop.sessions.get_or_create_checked(session_key) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                tracing::error!("Failed to load session '{session_key}': {e}");
+                                println!(
+                                    "Could not load session state: {e}\nCheck session file permissions and try again."
+                                );
+                                println!();
+                                continue;
+                            }
+                        };
                         let has_messages = !session.messages.is_empty();
 
                         if has_messages {
@@ -889,9 +960,21 @@ async fn run_interactive(
                             agent_loop.consolidate_memory(session_key, true).await;
                         }
 
-                        let session = agent_loop.sessions.get_or_create(session_key);
+                        let session = match agent_loop.sessions.get_or_create_checked(session_key) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to reload session '{session_key}' before clear: {e}"
+                                );
+                                println!("Could not reset session: {e}");
+                                println!();
+                                continue;
+                            }
+                        };
                         session.clear();
-                        let _ = agent_loop.sessions.save(session_key);
+                        if let Err(e) = agent_loop.sessions.save(session_key) {
+                            tracing::warn!("Failed to save cleared session '{session_key}': {e}");
+                        }
                         agent_loop.sessions.invalidate(session_key);
                         println!("New session started.");
                         println!();
@@ -901,7 +984,7 @@ async fn run_interactive(
                 }
 
                 // Process message
-                match agent_loop.process_message(session_key, input).await {
+                match agent_loop.process_message(session_key, input, None).await {
                     Ok(response) => {
                         println!();
                         render_markdown(&response);

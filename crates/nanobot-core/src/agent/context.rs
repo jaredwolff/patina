@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use base64::{engine::general_purpose, Engine as _};
 
 use crate::agent::memory::MemoryStore;
 use crate::agent::skills::SkillsLoader;
@@ -149,6 +150,50 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"#
         parts.join("\n\n")
     }
 
+    /// Build user message content with optional base64-encoded images.
+    fn build_user_content(&self, text: &str, media: Option<&[String]>) -> serde_json::Value {
+        let media = match media {
+            Some(m) if !m.is_empty() => m,
+            _ => return serde_json::json!(text),
+        };
+
+        let mut content_parts: Vec<serde_json::Value> = Vec::new();
+
+        for path_str in media {
+            let path = Path::new(path_str);
+            if !path.is_file() {
+                continue;
+            }
+            let mime = mime_guess::from_path(path)
+                .first()
+                .map(|m| m.to_string())
+                .unwrap_or_default();
+            if !mime.starts_with("image/") {
+                continue;
+            }
+            if let Ok(bytes) = std::fs::read(path) {
+                let b64 = general_purpose::STANDARD.encode(&bytes);
+                content_parts.push(serde_json::json!({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": format!("data:{mime};base64,{b64}")
+                    }
+                }));
+            }
+        }
+
+        if content_parts.is_empty() {
+            return serde_json::json!(text);
+        }
+
+        content_parts.push(serde_json::json!({
+            "type": "text",
+            "text": text
+        }));
+
+        serde_json::json!(content_parts)
+    }
+
     /// Build the complete message list for an LLM call.
     pub fn build_messages(
         &self,
@@ -156,6 +201,7 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"#
         current_message: &str,
         channel: Option<&str>,
         chat_id: Option<&str>,
+        media: Option<&[String]>,
     ) -> Result<Vec<serde_json::Value>> {
         let mut messages = Vec::new();
 
@@ -185,10 +231,11 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"#
             messages.push(entry);
         }
 
-        // Current message
+        // Current message (with optional media)
+        let user_content = self.build_user_content(current_message, media);
         messages.push(serde_json::json!({
             "role": "user",
-            "content": current_message
+            "content": user_content
         }));
 
         Ok(messages)

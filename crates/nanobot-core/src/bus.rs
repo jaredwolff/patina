@@ -11,6 +11,12 @@ pub struct InboundMessage {
     pub content: String,
     pub media: Vec<String>,
     pub metadata: HashMap<String, serde_json::Value>,
+    #[serde(default = "default_timestamp")]
+    pub timestamp: String,
+}
+
+pub fn default_timestamp() -> String {
+    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()
 }
 
 impl InboundMessage {
@@ -25,6 +31,8 @@ pub struct OutboundMessage {
     pub channel: String,
     pub chat_id: String,
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
@@ -60,6 +68,7 @@ mod tests {
             content: "hello".into(),
             media: Vec::new(),
             metadata: HashMap::new(),
+            timestamp: default_timestamp(),
         };
         assert_eq!(msg.session_key(), "telegram:12345");
     }
@@ -73,6 +82,7 @@ mod tests {
             content: "".into(),
             media: Vec::new(),
             metadata: HashMap::new(),
+            timestamp: default_timestamp(),
         };
         assert_eq!(msg.session_key(), "cli:interactive");
     }
@@ -87,6 +97,7 @@ mod tests {
             content: "hello".into(),
             media: vec!["photo.jpg".into()],
             metadata: HashMap::new(),
+            timestamp: default_timestamp(),
         };
 
         bus.inbound_tx.send(msg).await.unwrap();
@@ -105,6 +116,7 @@ mod tests {
             channel: "telegram".into(),
             chat_id: "99".into(),
             content: "response".into(),
+            reply_to: None,
             metadata: HashMap::new(),
         };
 
@@ -129,6 +141,7 @@ mod tests {
                 m.insert("key".into(), serde_json::json!("value"));
                 m
             },
+            timestamp: default_timestamp(),
         };
 
         let json = serde_json::to_string(&msg).unwrap();

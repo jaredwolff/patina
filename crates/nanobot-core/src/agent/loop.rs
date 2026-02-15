@@ -82,7 +82,9 @@ impl<M: CompletionModel> AgentLoop<M> {
     fn consume_interrupt(session_key: &str) -> bool {
         let flag = Self::interrupt_flag_path(session_key);
         if flag.exists() {
-            let _ = std::fs::remove_file(flag);
+            if let Err(e) = std::fs::remove_file(&flag) {
+                warn!("Failed to clear interrupt flag '{}': {e}", flag.display());
+            }
             true
         } else {
             false
@@ -94,18 +96,19 @@ impl<M: CompletionModel> AgentLoop<M> {
         &mut self,
         session_key: &str,
         user_message: &str,
+        media: Option<&[String]>,
     ) -> Result<String> {
         if Self::consume_interrupt(session_key) {
             return Ok("Interrupted before processing.".to_string());
         }
 
-        let session = self.sessions.get_or_create(session_key);
+        let session = self.sessions.get_or_create_checked(session_key)?;
         let history = session.get_history(self.memory_window);
 
         // Build messages for context
-        let messages_json = self
-            .context
-            .build_messages(&history, user_message, None, None)?;
+        let messages_json =
+            self.context
+                .build_messages(&history, user_message, None, None, media)?;
 
         // Convert to rig Message format
         let system_prompt = messages_json
@@ -187,14 +190,20 @@ impl<M: CompletionModel> AgentLoop<M> {
             .await?;
 
         // Save to session
-        let session = self.sessions.get_or_create(session_key);
+        let session = self.sessions.get_or_create_checked(session_key)?;
         session.add_message("user", user_message);
         session.add_message_full("assistant", &response, tools_used, reasoning);
         self.sessions.save(session_key)?;
 
         // Check if memory consolidation is needed
         let needs_consolidation = {
-            let session = self.sessions.get_or_create(session_key);
+            let session = match self.sessions.get_or_create_checked(session_key) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Failed to reload session '{session_key}' for consolidation check: {e}");
+                    return Ok(response);
+                }
+            };
             session.messages.len() > self.memory_window
         };
         if needs_consolidation {
@@ -343,7 +352,9 @@ Respond with ONLY valid JSON, no markdown fences."#
         // Update last_consolidated counter
         if let Some(session) = self.sessions.sessions.get_mut(session_key) {
             session.last_consolidated = end;
-            let _ = self.sessions.save(session_key);
+            if let Err(e) = self.sessions.save(session_key) {
+                warn!("Failed to persist session '{session_key}' after consolidation: {e}");
+            }
         }
     }
 
@@ -499,11 +510,15 @@ Respond with ONLY valid JSON, no markdown fences."#
                 }));
             }
 
-            // Add tool results as a user message and continue the loop
+            // Add tool results as a user message, plus a reflection prompt
+            // (matches Python: "Reflect on the results and decide next steps.")
+            tool_results.push(UserContent::Text(Text {
+                text: "Reflect on the results and decide next steps.".into(),
+            }));
             current_prompt = Message::User {
                 content: OneOrMany::many(tool_results).unwrap_or_else(|_| {
                     OneOrMany::one(UserContent::Text(Text {
-                        text: "Tool execution completed.".into(),
+                        text: "Tool execution completed. Reflect on the results and decide next steps.".into(),
                     }))
                 }),
             };

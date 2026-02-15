@@ -120,7 +120,9 @@ impl CronService {
         self.jobs.retain(|j| j.id != job_id);
         let removed = self.jobs.len() < len_before;
         if removed {
-            let _ = self.save();
+            if let Err(e) = self.save() {
+                warn!("Failed to persist cron store after removing job {job_id}: {e}");
+            }
             self.arm_timer();
             info!("Removed cron job {job_id}");
         }
@@ -135,9 +137,17 @@ impl CronService {
             job.updated_at_ms = Utc::now().timestamp_millis();
             if enabled {
                 let now_ms = Utc::now().timestamp_millis();
-                job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms).unwrap_or(None);
+                job.state.next_run_at_ms = match compute_next_run(&job.schedule, now_ms) {
+                    Ok(next) => next,
+                    Err(e) => {
+                        warn!("Failed to compute next run for cron job {job_id}: {e}");
+                        None
+                    }
+                };
             }
-            let _ = self.save();
+            if let Err(e) = self.save() {
+                warn!("Failed to persist cron store after updating job {job_id}: {e}");
+            }
             self.arm_timer();
             self.jobs.iter().find(|j| j.id == job_id)
         } else {
@@ -182,6 +192,7 @@ impl CronService {
                 chat_id,
                 content: job.payload.message.clone(),
                 media: Vec::new(),
+                timestamp: crate::bus::default_timestamp(),
                 metadata: {
                     let mut m = HashMap::new();
                     m.insert(
@@ -218,7 +229,13 @@ impl CronService {
                 }
             } else {
                 // Recompute next run for recurring jobs
-                job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms).unwrap_or(None);
+                job.state.next_run_at_ms = match compute_next_run(&job.schedule, now_ms) {
+                    Ok(next) => next,
+                    Err(e) => {
+                        warn!("Failed to compute next run for cron job {}: {e}", job.id);
+                        None
+                    }
+                };
             }
         }
 
@@ -230,8 +247,18 @@ impl CronService {
             version: 1,
             jobs: jobs.clone(),
         };
-        if let Ok(json) = serde_json::to_string_pretty(&store) {
-            let _ = std::fs::write(store_path, json);
+        match serde_json::to_string_pretty(&store) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(store_path, json) {
+                    warn!(
+                        "Failed to persist cron store '{}': {e}",
+                        store_path.display()
+                    );
+                }
+            }
+            Err(e) => {
+                warn!("Failed to serialize cron store: {e}");
+            }
         }
     }
 
