@@ -234,6 +234,86 @@ This is a new project with no legacy code. When making changes:
 - **Modern Rust idioms**: Use current best practices, no need to maintain old patterns
 - **Direct solutions**: Implement features cleanly without workarounds for historical reasons
 - **Standard formats**: Use standard JSON and JSONL formats for config and sessions
+- **Write tests**: Every new feature should include tests (see Testing Guidelines below)
+
+## Testing Guidelines
+
+### Test-Driven Development
+
+Write tests as you develop new features. Tests should be written:
+- **During development** — not as an afterthought
+- **Before marking a feature complete** — untested code is incomplete code
+- **For both happy paths and error cases** — test failure scenarios too
+
+### What to Test
+
+**Always write tests for:**
+- ✅ New tools (each tool should have unit tests)
+- ✅ Session persistence (loading/saving edge cases)
+- ✅ Config loading (validation, defaults, malformed input)
+- ✅ Tool execution (parameter parsing, error handling)
+- ✅ Message bus (routing, serialization)
+- ✅ Provider selection logic
+- ✅ Channel implementations (when added)
+
+**Optional (but encouraged):**
+- Integration tests for agent loop
+- End-to-end tests for CLI commands
+- Property-based tests for parsers
+
+### Test Organization
+
+```rust
+// In the same file as the implementation (for unit tests)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tool_execution() {
+        // Test implementation
+    }
+
+    #[tokio::test]
+    async fn test_async_tool() {
+        // Async test
+    }
+}
+```
+
+For integration tests, use `tests/` directory in each crate.
+
+### Running Tests
+
+```bash
+# Run all tests
+cargo test
+
+# Run tests for specific crate
+cargo test -p nanobot-core
+
+# Run specific test
+cargo test test_name
+
+# Run with output
+cargo test -- --nocapture
+
+# Run tests with logging
+RUST_LOG=debug cargo test
+```
+
+### Test Requirements Before Committing
+
+Before committing a new feature:
+1. ✅ All existing tests must pass (`cargo test`)
+2. ✅ New tests added for the feature
+3. ✅ Tests cover both success and error cases
+4. ✅ No warnings from `cargo test`
+
+**Do NOT commit**:
+- ❌ Features without tests
+- ❌ Code that breaks existing tests
+- ❌ Tests that are commented out or ignored without reason
 
 ## Documentation Updates
 
