@@ -173,10 +173,16 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"#
 
         // History
         for msg in history {
-            messages.push(serde_json::json!({
+            let mut entry = serde_json::json!({
                 "role": msg.role,
                 "content": msg.content
-            }));
+            });
+            // Include reasoning_content for thinking models (Kimi, DeepSeek-R1) so
+            // they can see their own reasoning in history.
+            if let Some(ref reasoning) = msg.reasoning_content {
+                entry["reasoning_content"] = serde_json::Value::String(reasoning.clone());
+            }
+            messages.push(entry);
         }
 
         // Current message

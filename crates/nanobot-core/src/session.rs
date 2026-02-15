@@ -15,6 +15,8 @@ pub struct Message {
     pub timestamp: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools_used: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 /// JSONL metadata line (first line of session file).
@@ -59,6 +61,7 @@ impl Session {
             content: content.into(),
             timestamp: Some(Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()),
             tools_used: None,
+            reasoning_content: None,
         });
         self.updated_at = Utc::now();
     }
@@ -69,6 +72,25 @@ impl Session {
             content: content.into(),
             timestamp: Some(Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()),
             tools_used: if tools.is_empty() { None } else { Some(tools) },
+            reasoning_content: None,
+        });
+        self.updated_at = Utc::now();
+    }
+
+    /// Add a message with tools and optional reasoning content from thinking models.
+    pub fn add_message_full(
+        &mut self,
+        role: &str,
+        content: &str,
+        tools: Vec<String>,
+        reasoning: Option<String>,
+    ) {
+        self.messages.push(Message {
+            role: role.into(),
+            content: content.into(),
+            timestamp: Some(Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()),
+            tools_used: if tools.is_empty() { None } else { Some(tools) },
+            reasoning_content: reasoning,
         });
         self.updated_at = Utc::now();
     }

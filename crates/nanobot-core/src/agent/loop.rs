@@ -1,6 +1,8 @@
 use anyhow::Result;
 use rig::completion::{CompletionModel, CompletionRequest, Message, ToolDefinition};
-use rig::message::{AssistantContent, Text, ToolCall, ToolResult, ToolResultContent, UserContent};
+use rig::message::{
+    AssistantContent, Reasoning, Text, ToolCall, ToolResult, ToolResultContent, UserContent,
+};
 use rig::OneOrMany;
 use tracing::{info, warn};
 
@@ -62,11 +64,25 @@ impl<M: CompletionModel> AgentLoop<M> {
                     });
                 }
                 "assistant" => {
+                    let mut parts: Vec<AssistantContent> = Vec::new();
+                    // Include reasoning_content if present (for thinking models)
+                    if let Some(reasoning) =
+                        msg_json.get("reasoning_content").and_then(|r| r.as_str())
+                    {
+                        if !reasoning.is_empty() {
+                            parts.push(AssistantContent::Reasoning(Reasoning::new(reasoning)));
+                        }
+                    }
+                    parts.push(AssistantContent::Text(Text {
+                        text: content.to_string(),
+                    }));
                     chat_history.push(Message::Assistant {
                         id: None,
-                        content: OneOrMany::one(AssistantContent::Text(Text {
-                            text: content.to_string(),
-                        })),
+                        content: OneOrMany::many(parts).unwrap_or_else(|_| {
+                            OneOrMany::one(AssistantContent::Text(Text {
+                                text: content.to_string(),
+                            }))
+                        }),
                     });
                 }
                 _ => {}
@@ -93,14 +109,14 @@ impl<M: CompletionModel> AgentLoop<M> {
             .collect();
 
         // Run the agent loop with tool calling
-        let (response, tools_used) = self
+        let (response, tools_used, reasoning) = self
             .run_loop(&system_prompt, chat_history, prompt, &tool_defs)
             .await?;
 
         // Save to session
         let session = self.sessions.get_or_create(session_key);
         session.add_message("user", user_message);
-        session.add_message_with_tools("assistant", &response, tools_used);
+        session.add_message_full("assistant", &response, tools_used, reasoning);
         self.sessions.save(session_key)?;
 
         // Check if memory consolidation is needed
@@ -259,15 +275,18 @@ Respond with ONLY valid JSON, no markdown fences."#
     }
 
     /// Run the LLM <> tool loop until the model produces a text response or max iterations.
+    ///
+    /// Returns (response_text, tools_used, reasoning_content).
     async fn run_loop(
         &self,
         system_prompt: &str,
         mut chat_history: Vec<Message>,
         prompt: Message,
         tool_defs: &[ToolDefinition],
-    ) -> Result<(String, Vec<String>)> {
+    ) -> Result<(String, Vec<String>, Option<String>)> {
         let mut tools_used = Vec::new();
         let mut current_prompt = prompt;
+        let mut accumulated_reasoning = String::new();
 
         for iteration in 0..self.max_iterations {
             // Build the rig CompletionRequest
@@ -307,18 +326,29 @@ Respond with ONLY valid JSON, no markdown fences."#
                         tool_calls_to_execute.push(tc.clone());
                     }
                     AssistantContent::Reasoning(r) => {
-                        info!("Model reasoning: {}", r.reasoning.join(" "));
+                        let reasoning_text = r.reasoning.join(" ");
+                        info!("Model reasoning: {reasoning_text}");
+                        if !accumulated_reasoning.is_empty() {
+                            accumulated_reasoning.push('\n');
+                        }
+                        accumulated_reasoning.push_str(&reasoning_text);
                     }
                     _ => {}
                 }
             }
+
+            let reasoning = if accumulated_reasoning.is_empty() {
+                None
+            } else {
+                Some(accumulated_reasoning.clone())
+            };
 
             if !has_tool_calls {
                 // Model returned a text response — we're done
                 if text_content.is_empty() {
                     text_content = "I've completed processing but have no response to give.".into();
                 }
-                return Ok((text_content, tools_used));
+                return Ok((text_content, tools_used, reasoning));
             }
 
             // Execute tool calls and feed results back
@@ -374,9 +404,15 @@ Respond with ONLY valid JSON, no markdown fences."#
             "Agent loop reached max iterations ({}) without final response",
             self.max_iterations
         );
+        let reasoning = if accumulated_reasoning.is_empty() {
+            None
+        } else {
+            Some(accumulated_reasoning)
+        };
         Ok((
             "I've been working on this but reached the maximum number of iterations. Here's what I've done so far.".to_string(),
             tools_used,
+            reasoning,
         ))
     }
 }

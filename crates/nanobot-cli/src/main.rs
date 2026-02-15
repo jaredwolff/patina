@@ -485,6 +485,53 @@ async fn run_gateway(config: &nanobot_config::Config, workspace: &Path) -> Resul
                     }
                 };
 
+                // System messages from subagents need special routing.
+                // chat_id contains "origin_channel:origin_chat_id" to route
+                // the response back to the correct destination.
+                if msg.channel == "system" {
+                    let (origin_channel, origin_chat_id) =
+                        if let Some((ch, cid)) = msg.chat_id.split_once(':') {
+                            (ch.to_string(), cid.to_string())
+                        } else {
+                            ("cli".to_string(), msg.chat_id.clone())
+                        };
+
+                    let session_key = format!("{origin_channel}:{origin_chat_id}");
+                    context_tools
+                        .set_context(&origin_channel, &origin_chat_id)
+                        .await;
+
+                    // Prefix content with system sender info
+                    let system_content =
+                        format!("[System: {}] {}", msg.sender_id, msg.content);
+
+                    match agent_loop
+                        .process_message(&session_key, &system_content)
+                        .await
+                    {
+                        Ok(response) => {
+                            let _ = bus.outbound_tx.send(OutboundMessage {
+                                channel: origin_channel,
+                                chat_id: origin_chat_id,
+                                content: response,
+                                metadata: msg.metadata.clone(),
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!("Error processing system message: {e}");
+                            let _ = bus.outbound_tx.send(OutboundMessage {
+                                channel: origin_channel,
+                                chat_id: origin_chat_id,
+                                content: format!(
+                                    "Background task completed but I couldn't process the result: {e}"
+                                ),
+                                metadata: HashMap::new(),
+                            });
+                        }
+                    }
+                    continue;
+                }
+
                 // Update tool context for this message's origin
                 context_tools
                     .set_context(&msg.channel, &msg.chat_id)
