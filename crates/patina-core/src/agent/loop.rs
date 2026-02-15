@@ -4,7 +4,7 @@ use rig::message::{
     AssistantContent, Reasoning, Text, ToolCall, ToolResult, ToolResultContent, UserContent,
 };
 use rig::OneOrMany;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::agent::context::ContextBuilder;
 use crate::session::SessionManager;
@@ -401,6 +401,13 @@ Respond with ONLY valid JSON, no markdown fences."#
                     (self.temperature, self.max_tokens)
                 };
 
+            debug!(
+                "LLM request [{}/{}]: {} messages, temp={effective_temp}, max_tokens={effective_max_tokens}",
+                iteration + 1,
+                self.max_iterations,
+                all_messages.len()
+            );
+
             let request = CompletionRequest {
                 preamble: Some(system_prompt.to_string()),
                 chat_history: OneOrMany::many(all_messages.clone())
@@ -413,11 +420,13 @@ Respond with ONLY valid JSON, no markdown fences."#
                 additional_params: None,
             };
 
+            let llm_start = std::time::Instant::now();
             let response = self
                 .model
                 .completion(request)
                 .await
                 .map_err(|e| anyhow::anyhow!("LLM completion error: {e}"))?;
+            let llm_elapsed = llm_start.elapsed();
 
             // Check what the model returned
             let mut has_tool_calls = false;
@@ -456,8 +465,23 @@ Respond with ONLY valid JSON, no markdown fences."#
                 if text_content.is_empty() {
                     text_content = "I've completed processing but have no response to give.".into();
                 }
+                debug!(
+                    "LLM response [{}/{}]: text ({} chars) in {:.1}s",
+                    iteration + 1,
+                    self.max_iterations,
+                    text_content.len(),
+                    llm_elapsed.as_secs_f64()
+                );
                 return Ok((text_content, tools_used, reasoning));
             }
+
+            debug!(
+                "LLM response [{}/{}]: {} tool call(s) in {:.1}s",
+                iteration + 1,
+                self.max_iterations,
+                tool_calls_to_execute.len(),
+                llm_elapsed.as_secs_f64()
+            );
 
             // Execute tool calls and feed results back
             // First, add the assistant message with tool calls to history
@@ -502,6 +526,13 @@ Respond with ONLY valid JSON, no markdown fences."#
                     Ok(r) => r,
                     Err(e) => format!("Error executing {tool_name}: {e}"),
                 };
+
+                let result_preview = if result.len() > 200 {
+                    format!("{}... ({} chars)", &result[..200], result.len())
+                } else {
+                    result.clone()
+                };
+                debug!("Tool result [{tool_name}]: {result_preview}");
 
                 tool_results.push(UserContent::ToolResult(ToolResult {
                     id: tc.id.clone(),
