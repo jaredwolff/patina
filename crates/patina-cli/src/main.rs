@@ -698,11 +698,15 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                     let system_content =
                         format!("[System: {}] {}", msg.sender_id, msg.content);
 
-                    match agent_loop
-                        .process_message(&session_key, &system_content, None)
-                        .await
-                    {
-                        Ok(response) => {
+                    let result = tokio::select! {
+                        res = agent_loop.process_message(&session_key, &system_content, None) => Some(res),
+                        _ = tokio::signal::ctrl_c() => {
+                            tracing::info!("Shutting down...");
+                            None
+                        }
+                    };
+                    match result {
+                        Some(Ok(response)) => {
                             if let Err(e) = bus.outbound_tx.send(OutboundMessage {
                                 channel: origin_channel,
                                 chat_id: origin_chat_id,
@@ -715,7 +719,7 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                                 );
                             }
                         }
-                        Err(e) => {
+                        Some(Err(e)) => {
                             tracing::error!("Error processing system message: {e}");
                             if let Err(send_err) = bus.outbound_tx.send(OutboundMessage {
                                 channel: origin_channel,
@@ -731,6 +735,7 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                                 );
                             }
                         }
+                        None => break,
                     }
                     continue;
                 }
@@ -817,8 +822,15 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                 } else {
                     Some(msg.media.as_slice())
                 };
-                match agent_loop.process_message(&session_key, content, media_opt).await {
-                    Ok(response) => {
+                let result = tokio::select! {
+                    res = agent_loop.process_message(&session_key, content, media_opt) => Some(res),
+                    _ = tokio::signal::ctrl_c() => {
+                        tracing::info!("Shutting down...");
+                        None
+                    }
+                };
+                match result {
+                    Some(Ok(response)) => {
                         if let Err(e) = bus.outbound_tx.send(OutboundMessage {
                             channel: msg.channel.clone(),
                             chat_id: msg.chat_id.clone(),
@@ -829,7 +841,7 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                             tracing::warn!("Failed to publish outbound response to bus: {e}");
                         }
                     }
-                    Err(e) => {
+                    Some(Err(e)) => {
                         tracing::error!("Error processing message: {e}");
                         if let Err(send_err) = bus.outbound_tx.send(OutboundMessage {
                             channel: msg.channel.clone(),
@@ -843,6 +855,7 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                             );
                         }
                     }
+                    None => break,
                 }
             }
             _ = tokio::signal::ctrl_c() => {
