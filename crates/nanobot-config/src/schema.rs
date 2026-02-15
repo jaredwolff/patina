@@ -7,6 +7,7 @@ pub struct Config {
     pub channels: ChannelsConfig,
     pub providers: ProvidersConfig,
     pub tools: ToolsConfig,
+    pub gateway: GatewayConfig,
     pub heartbeat: HeartbeatConfig,
     pub transcription: TranscriptionConfig,
 }
@@ -73,6 +74,23 @@ pub struct ProvidersConfig {
 pub struct ProviderConfig {
     pub api_key: Option<String>,
     pub api_base: Option<String>,
+    pub extra_headers: Option<std::collections::HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GatewayConfig {
+    pub host: String,
+    pub port: u16,
+}
+
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        Self {
+            host: "0.0.0.0".into(),
+            port: 18790,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

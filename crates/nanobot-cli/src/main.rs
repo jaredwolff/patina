@@ -55,6 +55,77 @@ enum Commands {
     Onboard,
     /// Show system status and configuration
     Status,
+    /// Manage scheduled cron jobs
+    Cron {
+        #[command(subcommand)]
+        action: CronCommands,
+    },
+    /// Manage channels
+    Channels {
+        #[command(subcommand)]
+        action: ChannelCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum CronCommands {
+    /// List scheduled jobs
+    List {
+        /// Include disabled jobs
+        #[arg(short, long)]
+        all: bool,
+    },
+    /// Add a new scheduled job
+    Add {
+        /// Job name
+        #[arg(long)]
+        name: String,
+        /// Message to send when triggered
+        #[arg(long)]
+        message: String,
+        /// Interval in seconds (recurring)
+        #[arg(long)]
+        every: Option<u64>,
+        /// Cron expression (e.g. "0 9 * * *")
+        #[arg(long)]
+        cron: Option<String>,
+        /// One-time execution at ISO datetime (e.g. "2025-06-01T09:00:00Z")
+        #[arg(long)]
+        at: Option<String>,
+        /// Deliver result to a channel
+        #[arg(long)]
+        deliver: bool,
+        /// Target channel for delivery
+        #[arg(long)]
+        channel: Option<String>,
+        /// Target chat_id for delivery
+        #[arg(long)]
+        to: Option<String>,
+    },
+    /// Remove a job by ID
+    Remove {
+        /// Job ID to remove
+        job_id: String,
+    },
+    /// Enable or disable a job
+    Enable {
+        /// Job ID
+        job_id: String,
+        /// Disable instead of enable
+        #[arg(long)]
+        disable: bool,
+    },
+    /// Manually run a job
+    Run {
+        /// Job ID to run
+        job_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ChannelCommands {
+    /// Show channel configuration and status
+    Status,
 }
 
 #[tokio::main]
@@ -74,6 +145,16 @@ async fn main() -> Result<()> {
         Commands::Status => {
             let config_path = cli.config.unwrap_or_else(find_config_path);
             return run_status(&config_path);
+        }
+        Commands::Cron { action } => {
+            let config_path = cli.config.unwrap_or_else(find_config_path);
+            let config = load_config(&config_path)?;
+            return run_cron_command(action, &config).await;
+        }
+        Commands::Channels { action } => {
+            let config_path = cli.config.unwrap_or_else(find_config_path);
+            let config = load_config(&config_path)?;
+            return run_channel_command(action, &config);
         }
         _ => {}
     }
@@ -154,6 +235,17 @@ fn create_model(config: &nanobot_config::Config) -> Result<CompletionModelHandle
                 "Using OpenAI-compatible provider (base: {})",
                 openai_cfg.api_base.as_deref().unwrap_or("default")
             );
+            return Ok(CompletionModelHandle::new(Arc::new(model)));
+        }
+    }
+
+    // 1b. Gateway auto-detection by API key prefix
+    if let Some(key) = resolve_api_key(&config.providers.openrouter, "OPENROUTER_API_KEY") {
+        if key.starts_with("sk-or-") {
+            let client: openrouter::Client = openrouter::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("Failed to create OpenRouter client: {e}"))?;
+            let model = client.completion_model(model_name);
+            tracing::info!("Using OpenRouter provider (detected by API key prefix)");
             return Ok(CompletionModelHandle::new(Arc::new(model)));
         }
     }
@@ -938,4 +1030,212 @@ fn print_provider_status(label: &str, provider: &Option<nanobot_config::Provider
             println!("  {label}: configured (empty)");
         }
     }
+}
+
+/// Handle cron CLI subcommands.
+async fn run_cron_command(action: CronCommands, config: &nanobot_config::Config) -> Result<()> {
+    use nanobot_core::cron::{CronSchedule, ScheduleKind};
+
+    let store_path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".nanobot")
+        .join("cron")
+        .join("jobs.json");
+
+    // Create a dummy inbound_tx — CLI cron commands don't send messages
+    let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel(1);
+    let mut cron_service = CronService::new(store_path, inbound_tx);
+    cron_service.start().await?;
+
+    match action {
+        CronCommands::List { all } => {
+            let jobs = cron_service.list_jobs(all);
+            if jobs.is_empty() {
+                println!("No scheduled jobs.");
+                return Ok(());
+            }
+            println!(
+                "{:<10} {:<8} {:<20} {:<15} {}",
+                "ID", "Enabled", "Name", "Schedule", "Next Run"
+            );
+            println!("{}", "-".repeat(75));
+            for job in &jobs {
+                let schedule_desc = match job.schedule.kind {
+                    ScheduleKind::Every => {
+                        let secs = job.schedule.every_ms.unwrap_or(0) / 1000;
+                        if secs >= 3600 {
+                            format!("every {}h", secs / 3600)
+                        } else if secs >= 60 {
+                            format!("every {}m", secs / 60)
+                        } else {
+                            format!("every {}s", secs)
+                        }
+                    }
+                    ScheduleKind::Cron => job.schedule.expr.clone().unwrap_or_else(|| "?".into()),
+                    ScheduleKind::At => match job.schedule.at_ms {
+                        Some(ms) => chrono::DateTime::from_timestamp_millis(ms)
+                            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                            .unwrap_or_else(|| "?".into()),
+                        None => "?".into(),
+                    },
+                };
+                let next_run = match job.state.next_run_at_ms {
+                    Some(ms) => chrono::DateTime::from_timestamp_millis(ms)
+                        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                        .unwrap_or_else(|| "—".into()),
+                    None => "—".into(),
+                };
+                println!(
+                    "{:<10} {:<8} {:<20} {:<15} {}",
+                    job.id,
+                    if job.enabled { "yes" } else { "no" },
+                    &job.name[..job.name.len().min(20)],
+                    schedule_desc,
+                    next_run
+                );
+            }
+        }
+        CronCommands::Add {
+            name,
+            message,
+            every,
+            cron,
+            at,
+            deliver,
+            channel,
+            to,
+        } => {
+            let (schedule, delete_after_run) = if let Some(secs) = every {
+                (
+                    CronSchedule {
+                        kind: ScheduleKind::Every,
+                        at_ms: None,
+                        every_ms: Some(secs as i64 * 1000),
+                        expr: None,
+                        tz: None,
+                    },
+                    false,
+                )
+            } else if let Some(expr) = cron {
+                (
+                    CronSchedule {
+                        kind: ScheduleKind::Cron,
+                        at_ms: None,
+                        every_ms: None,
+                        expr: Some(expr),
+                        tz: None,
+                    },
+                    false,
+                )
+            } else if let Some(at_str) = at {
+                let dt = chrono::DateTime::parse_from_rfc3339(&at_str).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Invalid datetime (use RFC3339 format, e.g. 2025-06-01T09:00:00Z): {e}"
+                    )
+                })?;
+                (
+                    CronSchedule {
+                        kind: ScheduleKind::At,
+                        at_ms: Some(dt.timestamp_millis()),
+                        every_ms: None,
+                        expr: None,
+                        tz: None,
+                    },
+                    true,
+                )
+            } else {
+                anyhow::bail!("Must specify one of --every, --cron, or --at");
+            };
+
+            let job = cron_service.add_job(
+                &name,
+                schedule,
+                &message,
+                deliver,
+                channel,
+                to,
+                delete_after_run,
+            )?;
+            println!("Added job '{}' (id: {})", job.name, job.id);
+        }
+        CronCommands::Remove { job_id } => {
+            if cron_service.remove_job(&job_id) {
+                println!("Removed job {job_id}");
+            } else {
+                println!("Job {job_id} not found");
+            }
+        }
+        CronCommands::Enable { job_id, disable } => {
+            let enabled = !disable;
+            match cron_service.enable_job(&job_id, enabled) {
+                Some(job) => {
+                    println!(
+                        "Job '{}' (id: {}) {}",
+                        job.name,
+                        job.id,
+                        if enabled { "enabled" } else { "disabled" }
+                    );
+                }
+                None => {
+                    println!("Job {job_id} not found");
+                }
+            }
+        }
+        CronCommands::Run { job_id } => {
+            // For manual run, we just print the job info — actual execution requires the gateway
+            let jobs = cron_service.list_jobs(true);
+            match jobs.iter().find(|j| j.id == job_id) {
+                Some(job) => {
+                    println!(
+                        "Job '{}' (id: {}) message: {}",
+                        job.name, job.id, job.payload.message
+                    );
+                    println!(
+                        "Note: Manual execution requires the gateway to be running (`nanobot serve`)."
+                    );
+                }
+                None => {
+                    println!("Job {job_id} not found");
+                }
+            }
+        }
+    }
+
+    let _ = config; // suppress unused warning
+    Ok(())
+}
+
+/// Handle channel CLI subcommands.
+fn run_channel_command(action: ChannelCommands, config: &nanobot_config::Config) -> Result<()> {
+    match action {
+        ChannelCommands::Status => {
+            println!("Channels:");
+            println!();
+
+            // Telegram
+            let tg = &config.channels.telegram;
+            println!("  Telegram:");
+            println!("    Enabled: {}", tg.enabled);
+            if tg.enabled {
+                let token_display = if tg.token.len() > 10 {
+                    format!("{}...{}", &tg.token[..4], &tg.token[tg.token.len() - 4..])
+                } else if tg.token.is_empty() {
+                    "(not set)".into()
+                } else {
+                    "***".into()
+                };
+                println!("    Token:   {token_display}");
+                if tg.allow_from.is_empty() {
+                    println!("    Access:  open (no allowFrom configured)");
+                } else {
+                    println!("    Access:  restricted to {} user(s)", tg.allow_from.len());
+                }
+                if let Some(ref proxy) = tg.proxy {
+                    println!("    Proxy:   {proxy}");
+                }
+            }
+        }
+    }
+
+    Ok(())
 }

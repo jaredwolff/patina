@@ -22,4 +22,5 @@ rig-core = { workspace = true }
 dirs = { workspace = true }
 rustyline = { workspace = true }
 async-trait = { workspace = true }
+chrono = { workspace = true }
 nanobot-transcribe = { workspace = true, features = ["parakeet"] }
