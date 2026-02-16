@@ -23,7 +23,8 @@ fn replace_italic(text: &str) -> String {
                 if let Some(end) = remainder.find('_') {
                     let end_pos = i + 1 + end;
                     // Check that the char after closing underscore is not alphanumeric
-                    let next_is_word = end_pos + 1 < chars.len() && chars[end_pos + 1].is_alphanumeric();
+                    let next_is_word =
+                        end_pos + 1 < chars.len() && chars[end_pos + 1].is_alphanumeric();
                     if !next_is_word && end > 0 {
                         result.push_str("<i>");
                         let italic_text: String = chars[i + 1..end_pos].iter().collect();
