@@ -6,6 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [Project Overview](#project-overview)
 - [Workspace Structure](#workspace-structure)
 - [Build and Test Commands](#build-and-test-commands)
+- [Communication Style](#communication-style)
 - [Configuration](#configuration)
 - [Architecture](#architecture)
   - [Agent Loop](#agent-loop-patina-coresrcagentlooprs)
@@ -67,6 +68,35 @@ cargo run --bin patina-cli -- serve
 # Specify custom config
 cargo run --bin patina-cli -- -c /path/to/config.json agent
 ```
+
+## Communication Style
+
+Be direct and concise. Avoid fluffy pleasantries and unnecessary narration.
+
+**Do NOT use phrases like:**
+- "Good question. Let me check..."
+- "Great! Now let's..."
+- "Perfect! I'll..."
+- "Let me take a look at..."
+- "I'll help you with that..."
+- "Sure! Let me..."
+
+**Instead, be direct:**
+- ❌ "Good question. Let me check how the config structs handle the camelCase to snake_case conversion."
+- ✅ "All config structs use `#[serde(rename_all = "camelCase")]`..."
+
+- ❌ "Great! Let me update the CLAUDE.md file for you."
+- ✅ *Just use the Edit tool*
+
+- ❌ "I'll help you implement this feature. First, let's..."
+- ✅ *Describe the implementation directly or start working*
+
+**Communication guidelines:**
+- Get straight to the point
+- Skip conversational filler
+- Only mention what tool you're using if it adds value (e.g., explaining why you chose a specific approach)
+- Provide technical information directly
+- Assume the user is technical and doesn't need hand-holding
 
 ## Configuration
 
@@ -225,14 +255,14 @@ Remaining polish:
 Future enhancements:
 - ❌ Additional channels (Discord, Slack, Email)
 - ❌ Semantic memory with vector databases
-- ❌ Security improvements from LocalGPT (see `LOCALGPT_COMPARISON.md`)
-- ❌ Monty code execution mode (see `MONTY_CODE_MODE_PLAN.md`)
+- ❌ Security improvements from LocalGPT (see `plans/LOCALGPT_COMPARISON.md`)
+- ❌ Monty code execution mode (see `plans/MONTY_CODE_MODE_PLAN.md`)
 
 ## Future Improvements
 
 See these planning documents for detailed future improvements:
 
-### LOCALGPT_COMPARISON.md
+### plans/LOCALGPT_COMPARISON.md
 Comprehensive comparison with LocalGPT (~23K LOC) identifying security and memory improvements:
 - **P0 Priority**: Kernel sandbox (Landlock + seccomp), content sanitization pipeline
 - **P1 Priority**: Memory search with FTS5 + embeddings, signed security policies (LocalGPT.md)
@@ -246,7 +276,7 @@ Key features to adopt:
 - Signed workspace security policies with HMAC verification
 - Hash-chained security audit log
 
-### MONTY_CODE_MODE_PLAN.md
+### plans/MONTY_CODE_MODE_PLAN.md
 Plan to integrate Monty's Python execution engine as alternative to tool calling:
 - **Execution modes**: Traditional tool calling vs code mode vs hybrid
 - **Benefits**: Reduce LLM round trips by 50-90%, enable natural control flow (loops, conditionals)
@@ -428,6 +458,7 @@ Commit changes when:
 - The code is in a working, stable state
 - A logical unit of work is complete (e.g., "implement skills loader", "add Telegram channel")
 - README.md has been updated if the feature is user-facing
+- **The user has approved the feature and confirmed it's ready to commit**
 
 ### Commit Process
 
@@ -454,7 +485,12 @@ Commit changes when:
    ```
    Or stage specific files if mixing work.
 
-5. **Create commit with descriptive message**:
+5. **Show proposed commit message** and present to user for approval:
+   - Explain what was implemented and how it was tested
+   - Show the commit message you plan to use
+   - **Wait for explicit user approval before running `git commit`**
+
+6. **Create commit** (only after user approval):
    ```bash
    git commit -m "feat(patina-bot): implement memory consolidation
 
@@ -498,6 +534,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 ### Important Notes
 
+- **NEVER run `git commit`** without explicit user approval — always present the proposed commit message and wait for confirmation
 - **Do NOT commit** if build/tests fail
 - **Do NOT mix** unrelated changes in one commit
 - **Do NOT push** to remote unless explicitly requested
