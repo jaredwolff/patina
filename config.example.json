@@ -15,7 +15,11 @@
       "enabled": false,
       "token": "",
       "allowFrom": [],
-      "proxy": null
+      "proxy": null,
+      "mode": "polling",
+      "webhookUrl": null,
+      "webhookListen": "0.0.0.0",
+      "webhookPort": 8443
     }
   },
   "providers": {

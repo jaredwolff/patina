@@ -19,3 +19,4 @@ reqwest = { workspace = true }
 dirs = { workspace = true }
 chrono = { workspace = true }
 patina-transcribe = { workspace = true }
+url = { workspace = true }

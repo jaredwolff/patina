@@ -57,6 +57,23 @@ pub struct TelegramConfig {
     pub token: String,
     pub allow_from: Vec<String>,
     pub proxy: Option<String>,
+    /// Update mode: "polling" (default) or "webhook".
+    pub mode: TelegramMode,
+    /// Public HTTPS URL for webhook mode (e.g. "https://example.com/webhook/telegram").
+    /// Telegram only supports ports 443, 80, 88, and 8443.
+    pub webhook_url: Option<String>,
+    /// Local address to bind the webhook listener on (default: "0.0.0.0").
+    pub webhook_listen: Option<String>,
+    /// Local port to bind the webhook listener on (default: 8443).
+    pub webhook_port: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TelegramMode {
+    #[default]
+    Polling,
+    Webhook,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -189,6 +206,53 @@ pub enum TranscriptionMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn telegram_mode_defaults_to_polling() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(cfg.channels.telegram.mode, TelegramMode::Polling);
+    }
+
+    #[test]
+    fn telegram_webhook_mode_parsed() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "channels": {
+                "telegram": {
+                    "mode": "webhook",
+                    "webhookUrl": "https://example.com/webhook/telegram",
+                    "webhookListen": "127.0.0.1",
+                    "webhookPort": 443
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(cfg.channels.telegram.mode, TelegramMode::Webhook);
+        assert_eq!(
+            cfg.channels.telegram.webhook_url.as_deref(),
+            Some("https://example.com/webhook/telegram")
+        );
+        assert_eq!(
+            cfg.channels.telegram.webhook_listen.as_deref(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(cfg.channels.telegram.webhook_port, Some(443));
+    }
+
+    #[test]
+    fn telegram_webhook_fields_optional() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "channels": {
+                "telegram": {
+                    "mode": "webhook"
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(cfg.channels.telegram.mode, TelegramMode::Webhook);
+        assert!(cfg.channels.telegram.webhook_url.is_none());
+        assert!(cfg.channels.telegram.webhook_listen.is_none());
+        assert!(cfg.channels.telegram.webhook_port.is_none());
+    }
 
     #[test]
     fn transcription_alias_engine_and_model_are_supported() {

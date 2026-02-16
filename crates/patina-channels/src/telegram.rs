@@ -1,7 +1,8 @@
 //! Telegram channel implementation using teloxide.
 //!
 //! Features:
-//! - Long polling (no webhook/public IP needed)
+//! - Long polling (default, no webhook/public IP needed)
+//! - Webhook mode (push updates, lower latency, requires public HTTPS URL)
 //! - Markdown-to-HTML conversion for rich responses
 //! - Thread/topic support for group chats
 //! - Photo/voice/document handling (downloads to ~/.patina/media/)
@@ -29,7 +30,7 @@ use patina_core::bus::{InboundMessage, OutboundMessage};
 use crate::base::Channel;
 use crate::markdown::markdown_to_telegram_html;
 
-/// Telegram channel using long polling.
+/// Telegram channel supporting both long polling and webhook modes.
 pub struct TelegramChannel {
     config: TelegramConfig,
     bot: Bot,
@@ -134,7 +135,13 @@ impl Channel for TelegramChannel {
     }
 
     async fn start(&self, inbound_tx: mpsc::Sender<InboundMessage>) -> Result<()> {
-        info!("Starting Telegram bot (polling mode)...");
+        let use_webhook = self.config.mode == patina_config::TelegramMode::Webhook;
+
+        if use_webhook {
+            info!("Starting Telegram bot (webhook mode)...");
+        } else {
+            info!("Starting Telegram bot (polling mode)...");
+        }
 
         // Register bot commands
         let commands = vec![
@@ -174,11 +181,6 @@ impl Channel for TelegramChannel {
         let typing_tasks = self.typing_tasks.clone();
         let transcriber = self.transcriber.clone();
 
-        // Delete webhook to ensure polling works
-        if let Err(e) = bot.delete_webhook().await {
-            warn!("Failed to delete webhook: {e}");
-        }
-
         // Build the handler
         let handler = Update::filter_message().endpoint(
             move |bot: Bot, msg: Message, inbound_tx: mpsc::Sender<InboundMessage>| {
@@ -193,7 +195,7 @@ impl Channel for TelegramChannel {
         );
 
         // Build dispatcher
-        let mut dispatcher = Dispatcher::builder(bot, handler)
+        let mut dispatcher = Dispatcher::builder(bot.clone(), handler)
             .dependencies(dptree::deps![inbound_tx])
             .default_handler(|_upd| async {})
             .error_handler(LoggingErrorHandler::with_custom_text(
@@ -201,7 +203,7 @@ impl Channel for TelegramChannel {
             ))
             .build();
 
-        // Run polling with shutdown support
+        // Run with shutdown support
         let shutdown_token = dispatcher.shutdown_token();
         tokio::spawn(async move {
             let _ = shutdown_rx.await;
@@ -211,7 +213,57 @@ impl Channel for TelegramChannel {
             }
         });
 
-        dispatcher.dispatch().await;
+        if use_webhook {
+            let webhook_url = self
+                .config
+                .webhook_url
+                .as_deref()
+                .filter(|u| !u.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Telegram webhook mode requires 'webhookUrl' to be set in config"
+                    )
+                })?;
+
+            let listen_addr = self.config.webhook_listen.as_deref().unwrap_or("0.0.0.0");
+            let listen_port = self.config.webhook_port.unwrap_or(8443);
+
+            let addr: std::net::SocketAddr = format!("{listen_addr}:{listen_port}")
+                .parse()
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Invalid webhook listen address '{listen_addr}:{listen_port}': {e}"
+                    )
+                })?;
+
+            let url: url::Url = webhook_url
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid webhook URL '{webhook_url}': {e}"))?;
+
+            info!("Webhook URL: {url}");
+            info!("Listening on {addr}");
+
+            let listener = teloxide::update_listeners::webhooks::axum(
+                bot,
+                teloxide::update_listeners::webhooks::Options::new(addr, url),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to set up webhook: {e}"))?;
+
+            dispatcher
+                .dispatch_with_listener(
+                    listener,
+                    LoggingErrorHandler::with_custom_text("Error in webhook listener"),
+                )
+                .await;
+        } else {
+            // Delete webhook to ensure polling works
+            if let Err(e) = bot.delete_webhook().await {
+                warn!("Failed to delete webhook: {e}");
+            }
+
+            dispatcher.dispatch().await;
+        }
 
         info!("Telegram bot stopped");
         Ok(())
@@ -738,6 +790,32 @@ mod tests {
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("token"));
+    }
+
+    #[test]
+    fn mode_defaults_to_polling() {
+        let config = TelegramConfig::default();
+        assert_eq!(config.mode, patina_config::TelegramMode::Polling);
+    }
+
+    #[test]
+    fn webhook_config_fields_accessible() {
+        let config = TelegramConfig {
+            enabled: true,
+            token: "test".into(),
+            mode: patina_config::TelegramMode::Webhook,
+            webhook_url: Some("https://example.com/hook".into()),
+            webhook_listen: Some("127.0.0.1".into()),
+            webhook_port: Some(8443),
+            ..Default::default()
+        };
+        assert_eq!(config.mode, patina_config::TelegramMode::Webhook);
+        assert_eq!(
+            config.webhook_url.as_deref(),
+            Some("https://example.com/hook")
+        );
+        assert_eq!(config.webhook_listen.as_deref(), Some("127.0.0.1"));
+        assert_eq!(config.webhook_port, Some(8443));
     }
 }
 
