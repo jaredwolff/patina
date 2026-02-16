@@ -716,15 +716,17 @@ Respond with ONLY valid JSON, no markdown fences."#,
                 }
             }
 
-            // Add tool results as a user message, plus a reflection prompt
-            // (matches Python: "Reflect on the results and decide next steps.")
+            // Add tool results as a user message.
+            // Keep the continuation prompt minimal to avoid the model over-interpreting results.
             tool_results.push(UserContent::Text(Text {
-                text: "Reflect on the results and decide next steps.".into(),
+                text:
+                    "If more tool calls are needed, make them. Otherwise, respond with the result."
+                        .into(),
             }));
             current_prompt = Message::User {
                 content: OneOrMany::many(tool_results).unwrap_or_else(|_| {
                     OneOrMany::one(UserContent::Text(Text {
-                        text: "Tool execution completed. Reflect on the results and decide next steps.".into(),
+                        text: "If more tool calls are needed, make them. Otherwise, respond with the result.".into(),
                     }))
                 }),
             };
