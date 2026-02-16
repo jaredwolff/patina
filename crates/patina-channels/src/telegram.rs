@@ -369,7 +369,11 @@ async fn handle_message(
                             match t.transcribe_file(&path).await {
                                 Ok(text) => {
                                     if text.len() > 50 {
-                                        info!("Transcribed voice: {}...", &text[..50]);
+                                        let mut end = 50;
+                                        while end > 0 && !text.is_char_boundary(end) {
+                                            end -= 1;
+                                        }
+                                        info!("Transcribed voice: {}...", &text[..end]);
                                     } else {
                                         info!("Transcribed voice: {text}");
                                     }
@@ -405,7 +409,11 @@ async fn handle_message(
                             match t.transcribe_file(&path).await {
                                 Ok(text) => {
                                     if text.len() > 50 {
-                                        info!("Transcribed audio: {}...", &text[..50]);
+                                        let mut end = 50;
+                                        while end > 0 && !text.is_char_boundary(end) {
+                                            end -= 1;
+                                        }
+                                        info!("Transcribed audio: {}...", &text[..end]);
                                     } else {
                                         info!("Transcribed audio: {text}");
                                     }

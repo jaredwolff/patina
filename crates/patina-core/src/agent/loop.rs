@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use rig::completion::{CompletionModel, CompletionRequest, Message, ToolDefinition};
@@ -9,8 +10,21 @@ use rig::OneOrMany;
 use tracing::{debug, info, warn};
 
 use crate::agent::context::ContextBuilder;
+use crate::agent::memory_index::MemoryIndex;
 use crate::session::SessionManager;
 use crate::tools::ToolRegistry;
+
+/// Find the largest byte index <= `max` that is a UTF-8 char boundary.
+fn floor_char_boundary(s: &str, max: usize) -> usize {
+    if max >= s.len() {
+        return s.len();
+    }
+    let mut i = max;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
 
 /// Data needed to run a memory consolidation LLM call.
 /// Captured as a snapshot so the call can run without borrowing AgentLoop.
@@ -81,6 +95,7 @@ pub struct AgentLoop<M: CompletionModel> {
     pub memory_window: usize,
     pub model_name: String,
     pub model_overrides: ModelOverrides,
+    pub memory_index: Option<Arc<MemoryIndex>>,
 }
 
 impl<M: CompletionModel> AgentLoop<M> {
@@ -391,7 +406,7 @@ Respond with ONLY valid JSON, no markdown fences."#,
                     "Memory consolidation: failed to parse JSON response: {e}\n\
                      Raw response (first 500 chars): {}",
                     if response_text.len() > 500 {
-                        &response_text[..500]
+                        &response_text[..floor_char_boundary(&response_text, 500)]
                     } else {
                         &response_text
                     }
@@ -453,6 +468,13 @@ Respond with ONLY valid JSON, no markdown fences."#,
                 "Session '{}' no longer exists after consolidation",
                 result.session_key
             );
+        }
+
+        // Reindex memory after consolidation writes new content
+        if let Some(ref index) = self.memory_index {
+            if let Err(e) = index.reindex() {
+                warn!("Memory reindex after consolidation failed: {e}");
+            }
         }
     }
 
@@ -626,7 +648,8 @@ Respond with ONLY valid JSON, no markdown fences."#,
 
                 let args_preview = tool_args.to_string();
                 let preview = if args_preview.len() > 200 {
-                    format!("{}...", &args_preview[..200])
+                    let end = floor_char_boundary(&args_preview, 200);
+                    format!("{}...", &args_preview[..end])
                 } else {
                     args_preview
                 };
@@ -653,7 +676,8 @@ Respond with ONLY valid JSON, no markdown fences."#,
                 };
 
                 let result_preview = if result.len() > 200 {
-                    format!("{}... ({} chars)", &result[..200], result.len())
+                    let end = floor_char_boundary(&result, 200);
+                    format!("{}... ({} chars)", &result[..end], result.len())
                 } else {
                     result.clone()
                 };
