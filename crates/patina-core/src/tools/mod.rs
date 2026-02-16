@@ -1,5 +1,6 @@
 pub mod cron;
 pub mod filesystem;
+pub mod memory_search;
 pub mod message;
 pub mod shell;
 pub mod spawn;

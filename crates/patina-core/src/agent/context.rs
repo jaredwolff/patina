@@ -134,7 +134,7 @@ For normal conversation, just respond with text - do not call the message tool.
 
 Always be helpful, accurate, and concise. When using tools, think step by step.
 When remembering something important, write to {workspace_path}/memory/MEMORY.md
-To recall past events, grep {workspace_path}/memory/HISTORY.md"#
+To recall past events, use the memory_search tool to search across memory and history files."#
         )
     }
 

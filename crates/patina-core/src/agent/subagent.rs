@@ -231,6 +231,7 @@ impl SubagentManager {
             memory_window: self.config.agents.defaults.memory_window,
             model_name: self.config.agents.defaults.model.clone(),
             model_overrides: crate::agent::r#loop::ModelOverrides::defaults(),
+            memory_index: None,
         })
     }
 

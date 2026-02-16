@@ -8,12 +8,15 @@ use patina_channels::manager::ChannelManager;
 use patina_channels::telegram::TelegramChannel;
 use patina_config::{find_config_path, load_config, resolve_workspace};
 use patina_core::agent::subagent::SubagentManager;
-use patina_core::agent::{AgentLoop, ConsolidationResult, ContextBuilder, ModelOverrides};
+use patina_core::agent::{
+    AgentLoop, ConsolidationResult, ContextBuilder, MemoryIndex, ModelOverrides,
+};
 use patina_core::bus::{InboundMessage, MessageBus, OutboundMessage};
 use patina_core::cron::CronService;
 use patina_core::session::SessionManager;
 use patina_core::tools::cron::CronTool;
 use patina_core::tools::filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
+use patina_core::tools::memory_search::MemorySearchTool;
 use patina_core::tools::message::MessageTool;
 use patina_core::tools::shell::ExecTool;
 use patina_core::tools::spawn::SpawnTool;
@@ -558,6 +561,17 @@ fn build_agent_loop(
     let cron_tool = Arc::new(CronTool::new(cron_service.clone()));
     tools.register(Box::new(ArcToolWrapper(cron_tool.clone())));
 
+    // Memory search index
+    let db_path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".patina")
+        .join("memory.sqlite");
+    let memory_index = Arc::new(MemoryIndex::new(workspace, &db_path)?);
+    if let Err(e) = memory_index.reindex() {
+        tracing::warn!("Initial memory reindex failed: {e}");
+    }
+    tools.register(Box::new(MemorySearchTool::new(memory_index.clone())));
+
     let context_tools = ContextTools {
         message_tool,
         spawn_tool,
@@ -575,6 +589,7 @@ fn build_agent_loop(
         memory_window: defaults.memory_window,
         model_name: defaults.model.clone(),
         model_overrides: ModelOverrides::defaults(),
+        memory_index: Some(memory_index),
     };
 
     Ok((agent_loop, context_tools, cron_service, bus))
