@@ -257,6 +257,14 @@ impl<M: CompletionModel> AgentLoop<M> {
         session.add_message_full("assistant", &response, tools_used, reasoning);
         self.sessions.save(session_key)?;
 
+        // Reindex memory files so new content is searchable immediately.
+        // Hash-based, so unchanged files are skipped cheaply.
+        if let Some(ref index) = self.memory_index {
+            if let Err(e) = index.reindex() {
+                warn!("Memory reindex after message failed: {e}");
+            }
+        }
+
         // Check if memory consolidation is needed (caller should run it
         // *after* delivering the response so the user isn't blocked).
         let needs_consolidation = {
