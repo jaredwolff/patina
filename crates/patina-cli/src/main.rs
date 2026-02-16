@@ -287,15 +287,11 @@ fn resolve_builtin_skills_dir() -> Option<PathBuf> {
         }
     }
 
-    let mut candidates =
-        vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../nanobot/skills")];
+    // Look for skills/ directory relative to the CLI crate, then CWD
+    let mut candidates = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skills")];
 
     if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("patina/skills"));
-        candidates.push(cwd.join("../patina/skills"));
-        // Backward compat with Python nanobot skills
-        candidates.push(cwd.join("nanobot/skills"));
-        candidates.push(cwd.join("../nanobot/skills"));
+        candidates.push(cwd.join("skills"));
     }
 
     candidates.into_iter().find(|p| p.is_dir())

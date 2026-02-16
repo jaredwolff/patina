@@ -62,11 +62,8 @@ impl ContextBuilder {
             parts.push(bootstrap);
         }
 
-        // Memory context
-        let memory = self.memory.read_long_term().unwrap_or_default();
-        if !memory.is_empty() {
-            parts.push(format!("# Memory\n\n{memory}"));
-        }
+        // Memory is indexed by memory_search — not injected into context.
+        // The agent can recall facts on demand via the memory_search tool.
 
         // Always-loaded skills (full content)
         let always_skills = self.skills.get_always_skills();
@@ -136,7 +133,7 @@ When writing scripts, prefer Python (run with `uv run`) over bash unless it's a 
 - Skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
 To save important information, write to {workspace_path}/memory/MEMORY.md
-To recall past events, use the memory_search tool."#
+To recall past events or user preferences, use the memory_search tool before answering."#
         )
     }
 
