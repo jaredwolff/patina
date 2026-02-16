@@ -20,11 +20,11 @@ pub struct ContextBuilder {
 }
 
 impl ContextBuilder {
-    pub fn new(workspace: &Path, builtin_skills: Option<&Path>) -> Self {
+    pub fn new(workspace: &Path) -> Self {
         Self {
             workspace: workspace.to_path_buf(),
             memory: MemoryStore::new(workspace),
-            skills: SkillsLoader::new(workspace, builtin_skills),
+            skills: SkillsLoader::new(workspace),
             preamble_override: None,
         }
     }
@@ -34,7 +34,7 @@ impl ContextBuilder {
         Self {
             workspace: workspace.to_path_buf(),
             memory: MemoryStore::new(workspace),
-            skills: SkillsLoader::new(workspace, None),
+            skills: SkillsLoader::new(workspace),
             preamble_override: Some(preamble),
         }
     }

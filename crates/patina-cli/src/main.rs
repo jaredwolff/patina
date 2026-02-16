@@ -273,30 +273,6 @@ fn resolve_api_key(
         .or_else(|| std::env::var(env_var).ok().filter(|k| !k.is_empty()))
 }
 
-/// Resolve builtin skills directory for progressive skill loading.
-///
-/// Resolution order:
-/// 1) `PATINA_BUILTIN_SKILLS` env var
-/// 2) Repository-relative path (dev builds)
-/// 3) Current working directory fallbacks
-fn resolve_builtin_skills_dir() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("PATINA_BUILTIN_SKILLS") {
-        let p = PathBuf::from(path);
-        if p.is_dir() {
-            return Some(p);
-        }
-    }
-
-    // Look for skills/ directory relative to the CLI crate, then CWD
-    let mut candidates = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skills")];
-
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("skills"));
-    }
-
-    candidates.into_iter().find(|p| p.is_dir())
-}
-
 /// Create a completion model for a specific provider + model combination.
 ///
 /// Errors clearly if provider is unknown or has no API key.
@@ -549,16 +525,8 @@ fn build_agent_loop(
         .join("sessions");
     let sessions = SessionManager::new(sessions_dir);
 
-    // Context builder (workspace + builtin skills)
-    let builtin_skills = resolve_builtin_skills_dir();
-    if let Some(ref dir) = builtin_skills {
-        tracing::info!("Builtin skills directory: {}", dir.display());
-    } else {
-        tracing::warn!(
-            "Builtin skills directory not found; only workspace skills will be available"
-        );
-    }
-    let context = ContextBuilder::new(workspace, builtin_skills.as_deref());
+    // Context builder (workspace + embedded builtin skills)
+    let context = ContextBuilder::new(workspace);
 
     // Tool registry
     let mut tools = ToolRegistry::new();

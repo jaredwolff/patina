@@ -1,7 +1,11 @@
 use std::path::{Path, PathBuf};
 
+use include_dir::{include_dir, Dir};
 use regex::Regex;
 use tracing::warn;
+
+/// Builtin skills embedded at compile time from the repo's `skills/` directory.
+static BUILTIN_SKILLS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../skills");
 
 /// Metadata parsed from a skill's YAML frontmatter.
 pub struct SkillInfo {
@@ -20,18 +24,16 @@ pub enum SkillSource {
     Builtin,
 }
 
-/// Loads markdown-based skills from workspace and builtin directories.
+/// Loads markdown-based skills from workspace and embedded builtins.
 pub struct SkillsLoader {
     workspace_skills: PathBuf,
-    builtin_skills: Option<PathBuf>,
     frontmatter_re: Regex,
 }
 
 impl SkillsLoader {
-    pub fn new(workspace: &Path, builtin: Option<&Path>) -> Self {
+    pub fn new(workspace: &Path) -> Self {
         Self {
             workspace_skills: workspace.join("skills"),
-            builtin_skills: builtin.map(|p| p.to_path_buf()),
             frontmatter_re: Regex::new(r"(?s)^---\n(.*?)\n---").unwrap(),
         }
     }
@@ -49,18 +51,40 @@ impl SkillsLoader {
             }
         }
 
-        // Builtin skills (only if not overridden by workspace)
-        if let Some(ref builtin) = self.builtin_skills {
-            if builtin.exists() {
-                let mut builtin_skills = Vec::new();
-                self.scan_dir(builtin, SkillSource::Builtin, &mut builtin_skills);
-                for s in builtin_skills {
-                    if !seen_names.contains(&s.name) {
-                        seen_names.insert(s.name.clone());
-                        skills.push(s);
-                    }
-                }
+        // Embedded builtin skills (only if not overridden by workspace)
+        for dir in BUILTIN_SKILLS.dirs() {
+            let name = dir
+                .path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+
+            if name.is_empty() || seen_names.contains(&name) {
+                continue;
             }
+
+            let skill_file = dir.get_file(dir.path().join("SKILL.md"));
+            let content = match skill_file.and_then(|f| f.contents_utf8()) {
+                Some(c) => c,
+                None => continue,
+            };
+
+            let meta = self.parse_frontmatter(content);
+            let description = meta.get("description").cloned().unwrap_or_default();
+            let always = meta.get("always").map(|v| v == "true").unwrap_or(false);
+            let (available, missing) = self.check_requirements(&meta);
+
+            seen_names.insert(name.clone());
+            skills.push(SkillInfo {
+                name,
+                description,
+                path: PathBuf::from(format!("builtin://{}", dir.path().display())),
+                source: SkillSource::Builtin,
+                always,
+                available,
+                missing_requirements: missing,
+            });
         }
 
         skills
@@ -83,15 +107,12 @@ impl SkillsLoader {
             return std::fs::read_to_string(&workspace_path).ok();
         }
 
-        // Try builtin
-        if let Some(ref builtin) = self.builtin_skills {
-            let builtin_path = builtin.join(name).join("SKILL.md");
-            if builtin_path.exists() {
-                return std::fs::read_to_string(&builtin_path).ok();
-            }
-        }
-
-        None
+        // Try embedded builtin
+        let builtin_path = format!("{name}/SKILL.md");
+        BUILTIN_SKILLS
+            .get_file(&builtin_path)
+            .and_then(|f| f.contents_utf8())
+            .map(|s| s.to_string())
     }
 
     /// Load specific skills for context injection, stripping frontmatter.
@@ -296,30 +317,44 @@ mod tests {
     #[test]
     fn workspace_overrides_builtin() {
         let workspace = tempfile::tempdir().unwrap();
-        let builtin = tempfile::tempdir().unwrap();
 
         let ws_skills = workspace.path().join("skills");
         std::fs::create_dir_all(&ws_skills).unwrap();
 
+        // "memory" is an embedded builtin — workspace should override it
         write_skill(
             &ws_skills,
-            "demo",
-            "---\nname: demo\ndescription: workspace\n---\nworkspace body",
-        );
-        write_skill(
-            builtin.path(),
-            "demo",
-            "---\nname: demo\ndescription: builtin\n---\nbuiltin body",
+            "memory",
+            "---\nname: memory\ndescription: workspace override\n---\nworkspace body",
         );
 
-        let loader = SkillsLoader::new(workspace.path(), Some(builtin.path()));
+        let loader = SkillsLoader::new(workspace.path());
         let skills = loader.list_skills();
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "demo");
-        assert_eq!(skills[0].source, SkillSource::Workspace);
 
-        let loaded = loader.load_skill("demo").unwrap();
+        let memory_skill = skills.iter().find(|s| s.name == "memory").unwrap();
+        assert_eq!(memory_skill.source, SkillSource::Workspace);
+        assert_eq!(memory_skill.description, "workspace override");
+
+        let loaded = loader.load_skill("memory").unwrap();
         assert!(loaded.contains("workspace body"));
+    }
+
+    #[test]
+    fn loads_embedded_builtins() {
+        // Empty workspace — should still find embedded builtins
+        let workspace = tempfile::tempdir().unwrap();
+        let loader = SkillsLoader::new(workspace.path());
+        let skills = loader.list_skills();
+
+        // Should have at least the embedded builtins (memory, cron, etc.)
+        assert!(!skills.is_empty());
+        let memory = skills.iter().find(|s| s.name == "memory");
+        assert!(memory.is_some());
+        assert_eq!(memory.unwrap().source, SkillSource::Builtin);
+
+        // Should be able to load content
+        let content = loader.load_skill("memory").unwrap();
+        assert!(content.contains("Memory"));
     }
 
     #[test]
@@ -334,11 +369,11 @@ mod tests {
             "---\nname: needs-bin\ndescription: test\nmetadata: {\"nanobot\":{\"requires\":{\"bins\":[\"__missing_bin_for_test__\"]}}}\n---\nbody",
         );
 
-        let loader = SkillsLoader::new(workspace.path(), None);
+        let loader = SkillsLoader::new(workspace.path());
         let skills = loader.list_skills();
-        assert_eq!(skills.len(), 1);
-        assert!(!skills[0].available);
-        assert!(skills[0]
+        let needs_bin = skills.iter().find(|s| s.name == "needs-bin").unwrap();
+        assert!(!needs_bin.available);
+        assert!(needs_bin
             .missing_requirements
             .iter()
             .any(|r| r.contains("CLI: __missing_bin_for_test__")));

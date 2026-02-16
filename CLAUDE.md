@@ -541,3 +541,4 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - **Do commit frequently** — small, logical commits are better than large monolithic ones
 - **Do update README** when completing user-facing features
 - **Keep documentation in sync** — outdated docs are worse than no docs
+- Before commit make sure we `cargo fmt`

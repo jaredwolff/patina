@@ -2296,6 +2296,7 @@ dependencies = [
  "dirs",
  "glob",
  "html-escape",
+ "include_dir",
  "mime_guess",
  "patina-config",
  "readability",
