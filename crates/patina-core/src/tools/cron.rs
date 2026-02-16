@@ -205,7 +205,7 @@ impl CronTool {
             return Ok("No active cron jobs.".to_string());
         }
 
-        let mut output = String::from("Active cron jobs:\n");
+        let mut output = String::from("Share this with the user:\n\nActive cron jobs:\n");
         for job in jobs {
             let schedule_desc = match job.schedule.kind {
                 ScheduleKind::Every => {
