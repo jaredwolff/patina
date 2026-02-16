@@ -392,15 +392,7 @@ Respond with ONLY valid JSON, no markdown fences."#,
 
         debug!("Memory consolidation LLM response: {}", response_text);
 
-        // Strip markdown fences if present
-        let trimmed = response_text.trim();
-        let json_str = trimmed
-            .strip_prefix("```json")
-            .or_else(|| trimmed.strip_prefix("```"))
-            .unwrap_or(trimmed)
-            .strip_suffix("```")
-            .unwrap_or(trimmed)
-            .trim();
+        let json_str = strip_markdown_fences(&response_text);
 
         debug!(
             "Memory consolidation JSON after fence stripping: {}",
@@ -754,5 +746,54 @@ Respond with ONLY valid JSON, no markdown fences."#,
             tools_used,
             reasoning,
         ))
+    }
+}
+
+/// Strip markdown code fences from an LLM response to extract raw content.
+/// Handles ```json, ```, and plain text (no fences).
+fn strip_markdown_fences(text: &str) -> &str {
+    let trimmed = text.trim();
+    if let Some(rest) = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+    {
+        rest.strip_suffix("```").unwrap_or(rest).trim()
+    } else {
+        trimmed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_markdown_fences_json() {
+        let input = "```json\n{\"key\": \"value\"}\n```";
+        assert_eq!(strip_markdown_fences(input), "{\"key\": \"value\"}");
+    }
+
+    #[test]
+    fn test_strip_markdown_fences_plain() {
+        let input = "```\n{\"key\": \"value\"}\n```";
+        assert_eq!(strip_markdown_fences(input), "{\"key\": \"value\"}");
+    }
+
+    #[test]
+    fn test_strip_markdown_fences_none() {
+        let input = "{\"key\": \"value\"}";
+        assert_eq!(strip_markdown_fences(input), "{\"key\": \"value\"}");
+    }
+
+    #[test]
+    fn test_strip_markdown_fences_with_whitespace() {
+        let input = "  \n```json\n{\"key\": \"value\"}\n```\n  ";
+        assert_eq!(strip_markdown_fences(input), "{\"key\": \"value\"}");
+    }
+
+    #[test]
+    fn test_strip_markdown_fences_no_closing() {
+        let input = "```json\n{\"key\": \"value\"}";
+        assert_eq!(strip_markdown_fences(input), "{\"key\": \"value\"}");
     }
 }
