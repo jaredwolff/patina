@@ -69,6 +69,7 @@ pub struct ProvidersConfig {
     pub deepseek: Option<ProviderConfig>,
     pub groq: Option<ProviderConfig>,
     pub gemini: Option<ProviderConfig>,
+    pub mistral: Option<ProviderConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

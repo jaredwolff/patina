@@ -25,7 +25,7 @@ use patina_core::tools::ToolRegistry;
 #[allow(deprecated)]
 use rig::client::completion::CompletionModelHandle;
 use rig::client::{CompletionClient, Nothing};
-use rig::providers::{anthropic, deepseek, gemini, groq, ollama, openai, openrouter};
+use rig::providers::{anthropic, deepseek, gemini, groq, mistral, ollama, openai, openrouter};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use tokio::sync::Mutex;
@@ -313,7 +313,7 @@ fn create_model(config: &patina_config::Config) -> Result<CompletionModelHandle<
     if provider.is_empty() {
         anyhow::bail!(
             "No provider configured. Set agents.defaults.provider in config.json.\n\
-             Valid providers: anthropic, openai, ollama, openrouter, deepseek, groq, gemini"
+             Valid providers: anthropic, openai, ollama, openrouter, deepseek, groq, gemini, mistral"
         );
     }
 
@@ -445,10 +445,25 @@ fn create_model(config: &patina_config::Config) -> Result<CompletionModelHandle<
             Ok(CompletionModelHandle::new(Arc::new(model)))
         }
 
+        "mistral" => {
+            let key =
+                resolve_api_key(&config.providers.mistral, "MISTRAL_API_KEY").ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Mistral provider selected but no API key found. \
+                     Set providers.mistral.apiKey in config.json or MISTRAL_API_KEY env var."
+                    )
+                })?;
+            let client: mistral::Client = mistral::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("Failed to create Mistral client: {e}"))?;
+            let model = client.completion_model(model_name);
+            tracing::info!("Using Mistral provider with model '{model_name}'");
+            Ok(CompletionModelHandle::new(Arc::new(model)))
+        }
+
         other => {
             anyhow::bail!(
                 "Unknown provider '{other}'. \
-                 Valid providers: anthropic, openai, ollama, openrouter, deepseek, groq, gemini"
+                 Valid providers: anthropic, openai, ollama, openrouter, deepseek, groq, gemini, mistral"
             );
         }
     }
