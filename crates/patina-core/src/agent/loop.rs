@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+#[allow(deprecated)]
+use rig::client::completion::CompletionModelHandle;
 use rig::completion::{CompletionModel, CompletionRequest, Message, ToolDefinition};
 use rig::message::{
     AssistantContent, Reasoning, Text, ToolCall, ToolResult, ToolResultContent, UserContent,
@@ -11,6 +13,7 @@ use tracing::{debug, info, warn};
 
 use crate::agent::context::ContextBuilder;
 use crate::agent::memory_index::MemoryIndex;
+use crate::agent::model_pool::ModelPool;
 use crate::session::SessionManager;
 use crate::tools::ToolRegistry;
 
@@ -84,8 +87,9 @@ impl ModelOverrides {
 ///
 /// Uses rig's CompletionModel directly for LLM calls but runs its own
 /// tool dispatch loop (like the Python version) for maximum control.
-pub struct AgentLoop<M: CompletionModel> {
-    pub model: M,
+#[allow(deprecated)]
+pub struct AgentLoop {
+    pub models: ModelPool,
     pub sessions: SessionManager,
     pub context: ContextBuilder,
     pub tools: ToolRegistry,
@@ -93,12 +97,12 @@ pub struct AgentLoop<M: CompletionModel> {
     pub temperature: f64,
     pub max_tokens: u64,
     pub memory_window: usize,
-    pub model_name: String,
     pub model_overrides: ModelOverrides,
     pub memory_index: Option<Arc<MemoryIndex>>,
 }
 
-impl<M: CompletionModel> AgentLoop<M> {
+#[allow(deprecated)]
+impl AgentLoop {
     fn interrupt_flag_path(session_key: &str) -> std::path::PathBuf {
         let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         let safe = session_key
@@ -248,6 +252,7 @@ impl<M: CompletionModel> AgentLoop<M> {
                 chat_history,
                 prompt,
                 &tool_defs,
+                "default",
             )
             .await?;
 
@@ -340,7 +345,7 @@ impl<M: CompletionModel> AgentLoop<M> {
     /// Run the consolidation LLM call and write memory files.
     /// This is a static method that doesn't need `self`.
     pub async fn run_consolidation(
-        model: &M,
+        model: &CompletionModelHandle<'static>,
         task: &ConsolidationTask,
     ) -> Option<ConsolidationResult> {
         let prompt = format!(
@@ -478,6 +483,12 @@ Respond with ONLY valid JSON, no markdown fences."#,
         }
     }
 
+    /// Get the model handle for a given tier (cloned for use in spawned tasks).
+    pub fn model_for_tier(&self, tier: &str) -> CompletionModelHandle<'static> {
+        let (model, _) = self.models.get(tier);
+        model.clone()
+    }
+
     /// Consolidate old messages synchronously (convenience wrapper).
     /// Used by `/new` command and CLI interactive mode where blocking is acceptable.
     pub async fn consolidate_memory(&mut self, session_key: &str, archive_all: bool) {
@@ -485,7 +496,8 @@ Respond with ONLY valid JSON, no markdown fences."#,
             Some(t) => t,
             None => return,
         };
-        if let Some(result) = Self::run_consolidation(&self.model, &task).await {
+        let (model, _) = self.models.get("consolidation");
+        if let Some(result) = Self::run_consolidation(model, &task).await {
             self.apply_consolidation(&result);
         }
     }
@@ -500,7 +512,10 @@ Respond with ONLY valid JSON, no markdown fences."#,
         mut chat_history: Vec<Message>,
         prompt: Message,
         tool_defs: &[ToolDefinition],
+        tier: &str,
     ) -> Result<(String, Vec<String>, Option<String>)> {
+        let (model, model_name) = self.models.get(tier);
+        let model_name = model_name.to_string();
         let mut tools_used = Vec::new();
         let mut current_prompt = prompt;
         let mut accumulated_reasoning = String::new();
@@ -526,7 +541,7 @@ Respond with ONLY valid JSON, no markdown fences."#,
 
             // Apply model-specific overrides (e.g. kimi-k2.5 forces temperature=1.0)
             let (effective_temp, effective_max_tokens) =
-                if let Some(overrides) = self.model_overrides.find(&self.model_name) {
+                if let Some(overrides) = self.model_overrides.find(&model_name) {
                     (
                         overrides.temperature.unwrap_or(self.temperature),
                         overrides.max_tokens.unwrap_or(self.max_tokens),
@@ -555,8 +570,7 @@ Respond with ONLY valid JSON, no markdown fences."#,
             };
 
             let llm_start = std::time::Instant::now();
-            let response = self
-                .model
+            let response = model
                 .completion(request)
                 .await
                 .map_err(|e| anyhow::anyhow!("LLM completion error: {e}"))?;

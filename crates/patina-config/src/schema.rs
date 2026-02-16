@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -16,13 +18,28 @@ pub struct Config {
 #[serde(rename_all = "camelCase", default)]
 pub struct AgentsConfig {
     pub defaults: AgentDefaults,
+    /// Named model tiers. Must contain at least a "default" entry.
+    /// Example tiers: "default", "coding", "consolidation".
+    pub models: HashMap<String, ModelRef>,
+}
+
+/// Reference to a provider + model combination for a named tier.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRef {
+    pub provider: String,
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AgentDefaults {
     pub workspace: String,
+    /// Deprecated: use agents.models instead.
+    #[serde(default)]
     pub provider: String,
+    /// Deprecated: use agents.models instead.
+    #[serde(default)]
     pub model: String,
     pub max_tokens: u32,
     pub temperature: f32,

@@ -9,7 +9,7 @@ use patina_channels::telegram::TelegramChannel;
 use patina_config::{find_config_path, load_config, resolve_workspace};
 use patina_core::agent::subagent::SubagentManager;
 use patina_core::agent::{
-    AgentLoop, ConsolidationResult, ContextBuilder, MemoryIndex, ModelOverrides,
+    AgentLoop, ConsolidationResult, ContextBuilder, MemoryIndex, ModelOverrides, ModelPool,
 };
 use patina_core::bus::{InboundMessage, MessageBus, OutboundMessage};
 use patina_core::cron::CronService;
@@ -301,27 +301,27 @@ fn resolve_builtin_skills_dir() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_dir())
 }
 
-/// Create a completion model from config using the explicitly configured provider.
+/// Create a completion model for a specific provider + model combination.
 ///
-/// Requires `agents.defaults.provider` and `agents.defaults.model` to be set.
-/// Errors clearly if provider is missing, unknown, or has no API key.
+/// Errors clearly if provider is unknown or has no API key.
 #[allow(deprecated)]
-fn create_model(config: &patina_config::Config) -> Result<CompletionModelHandle<'static>> {
-    let provider = &config.agents.defaults.provider;
-    let model_name = &config.agents.defaults.model;
-
+fn create_model_for(
+    provider: &str,
+    model_name: &str,
+    config: &patina_config::Config,
+) -> Result<CompletionModelHandle<'static>> {
     if provider.is_empty() {
         anyhow::bail!(
-            "No provider configured. Set agents.defaults.provider in config.json.\n\
+            "No provider configured.\n\
              Valid providers: anthropic, openai, ollama, openrouter, deepseek, groq, gemini, mistral"
         );
     }
 
     if model_name.is_empty() {
-        anyhow::bail!("No model configured. Set agents.defaults.model in config.json.");
+        anyhow::bail!("No model configured for provider '{provider}'.");
     }
 
-    match provider.as_str() {
+    match provider {
         "anthropic" => {
             let key = resolve_api_key(&config.providers.anthropic, "ANTHROPIC_API_KEY")
                 .ok_or_else(|| {
@@ -469,6 +469,55 @@ fn create_model(config: &patina_config::Config) -> Result<CompletionModelHandle<
     }
 }
 
+/// Build a ModelPool from config.
+///
+/// Uses `agents.models` if present, otherwise falls back to the legacy
+/// `agents.defaults.provider` + `agents.defaults.model` fields.
+#[allow(deprecated)]
+fn create_model_pool(config: &patina_config::Config) -> Result<ModelPool> {
+    let mut models = std::collections::HashMap::new();
+
+    if config.agents.models.is_empty() {
+        // Backwards compatibility: migrate legacy provider/model to "default" tier
+        let provider = &config.agents.defaults.provider;
+        let model_name = &config.agents.defaults.model;
+
+        if provider.is_empty() || model_name.is_empty() {
+            anyhow::bail!(
+                "No models configured. Set agents.models in config.json with at least a \"default\" entry.\n\
+                 Example:\n  \
+                 \"models\": {{ \"default\": {{ \"provider\": \"ollama\", \"model\": \"llama3\" }} }}"
+            );
+        }
+
+        tracing::warn!(
+            "Using legacy agents.defaults.provider/model config. \
+             Migrate to agents.models for multi-tier support."
+        );
+
+        let handle = create_model_for(provider, model_name, config)?;
+        models.insert("default".to_string(), (handle, model_name.clone()));
+    } else {
+        // Validate "default" tier exists
+        if !config.agents.models.contains_key("default") {
+            anyhow::bail!("config.agents.models must contain at least a \"default\" entry.");
+        }
+
+        for (tier, model_ref) in &config.agents.models {
+            let handle = create_model_for(&model_ref.provider, &model_ref.model, config)
+                .map_err(|e| anyhow::anyhow!("Failed to create model for tier '{tier}': {e}"))?;
+            tracing::info!(
+                "Model tier '{tier}': {} / {}",
+                model_ref.provider,
+                model_ref.model
+            );
+            models.insert(tier.clone(), (handle, model_ref.model.clone()));
+        }
+    }
+
+    Ok(ModelPool::new(models))
+}
+
 /// Holds context-aware tools that need set_context() called before each message.
 struct ContextTools {
     message_tool: Arc<MessageTool>,
@@ -490,14 +539,9 @@ impl ContextTools {
 fn build_agent_loop(
     config: &patina_config::Config,
     workspace: &Path,
-) -> Result<(
-    AgentLoop<CompletionModelHandle<'static>>,
-    ContextTools,
-    Arc<Mutex<CronService>>,
-    MessageBus,
-)> {
+) -> Result<(AgentLoop, ContextTools, Arc<Mutex<CronService>>, MessageBus)> {
     let defaults = &config.agents.defaults;
-    let model = create_model(config)?;
+    let model_pool = create_model_pool(config)?;
 
     // Message bus
     let bus = MessageBus::new(128);
@@ -555,7 +599,7 @@ fn build_agent_loop(
 
     // Subagent manager + spawn tool
     let subagent_manager = Arc::new(SubagentManager::new(
-        model.clone(),
+        model_pool.clone(),
         workspace.to_path_buf(),
         bus.inbound_tx.clone(),
         config.clone(),
@@ -594,7 +638,7 @@ fn build_agent_loop(
     };
 
     let agent_loop = AgentLoop {
-        model,
+        models: model_pool,
         sessions,
         context,
         tools,
@@ -602,7 +646,6 @@ fn build_agent_loop(
         temperature: defaults.temperature as f64,
         max_tokens: defaults.max_tokens as u64,
         memory_window: defaults.memory_window,
-        model_name: defaults.model.clone(),
         model_overrides: ModelOverrides::defaults(),
         memory_index: Some(memory_index),
     };
@@ -630,7 +673,6 @@ impl<T: patina_core::tools::Tool + 'static> patina_core::tools::Tool for ArcTool
 }
 
 /// Run the full gateway: channels + agent processing loop + cron + heartbeat.
-#[allow(deprecated)]
 async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result<()> {
     tracing::info!("Starting gateway...");
 
@@ -780,7 +822,7 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                             if let Some(task) =
                                 agent_loop.prepare_consolidation(&session_key, false)
                             {
-                                let model = agent_loop.model.clone();
+                                let model = agent_loop.model_for_tier("consolidation");
                                 let tx = consol_tx.clone();
                                 tokio::spawn(async move {
                                     if let Some(result) =
@@ -991,7 +1033,7 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                     }
                     if needs_consolidation {
                         if let Some(task) = agent_loop.prepare_consolidation(&session_key, false) {
-                            let model = agent_loop.model.clone();
+                            let model = agent_loop.model_for_tier("consolidation");
                             let tx = consol_tx.clone();
                             tokio::spawn(async move {
                                 if let Some(result) =
@@ -1043,9 +1085,8 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
     Ok(())
 }
 
-#[allow(deprecated)]
 async fn run_single_message(
-    mut agent_loop: AgentLoop<CompletionModelHandle<'static>>,
+    mut agent_loop: AgentLoop,
     session_key: &str,
     message: &str,
 ) -> Result<()> {
@@ -1059,9 +1100,8 @@ async fn run_single_message(
     Ok(())
 }
 
-#[allow(deprecated)]
 async fn run_interactive(
-    mut agent_loop: AgentLoop<CompletionModelHandle<'static>>,
+    mut agent_loop: AgentLoop,
     context_tools: ContextTools,
     session_key: &str,
 ) -> Result<()> {

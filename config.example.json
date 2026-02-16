@@ -2,12 +2,16 @@
   "agents": {
     "defaults": {
       "workspace": "~/.patina/workspace",
-      "provider": "ollama",
-      "model": "llama3",
       "maxTokens": 8192,
       "temperature": 0.7,
       "maxToolIterations": 20,
       "memoryWindow": 50
+    },
+    "models": {
+      "default": {
+        "provider": "ollama",
+        "model": "llama3"
+      }
     }
   },
   "channels": {

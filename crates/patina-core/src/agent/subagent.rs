@@ -3,13 +3,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-#[allow(deprecated)]
-use rig::client::completion::CompletionModelHandle;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::agent::context::ContextBuilder;
+use crate::agent::model_pool::ModelPool;
 use crate::agent::r#loop::AgentLoop;
 use crate::bus::InboundMessage;
 use crate::session::SessionManager;
@@ -25,26 +24,24 @@ struct SubagentInfo {
 }
 
 /// Manages spawning of background agent instances.
-#[allow(deprecated)]
 pub struct SubagentManager {
     running: Arc<Mutex<HashMap<String, SubagentInfo>>>,
-    model: CompletionModelHandle<'static>,
+    models: ModelPool,
     workspace: PathBuf,
     inbound_tx: mpsc::Sender<InboundMessage>,
     config: patina_config::Config,
 }
 
-#[allow(deprecated)]
 impl SubagentManager {
     pub fn new(
-        model: CompletionModelHandle<'static>,
+        models: ModelPool,
         workspace: PathBuf,
         inbound_tx: mpsc::Sender<InboundMessage>,
         config: patina_config::Config,
     ) -> Self {
         Self {
             running: Arc::new(Mutex::new(HashMap::new())),
-            model,
+            models,
             workspace,
             inbound_tx,
             config,
@@ -167,10 +164,7 @@ impl SubagentManager {
         }
     }
 
-    fn build_subagent_loop(
-        &self,
-        _task_id: &str,
-    ) -> Result<AgentLoop<CompletionModelHandle<'static>>> {
+    fn build_subagent_loop(&self, _task_id: &str) -> Result<AgentLoop> {
         let sessions_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".patina")
@@ -221,7 +215,7 @@ impl SubagentManager {
         tools.register(Box::new(WebFetchTool::new(50_000)));
 
         Ok(AgentLoop {
-            model: self.model.clone(),
+            models: self.models.clone(),
             sessions,
             context,
             tools,
@@ -229,14 +223,13 @@ impl SubagentManager {
             temperature: self.config.agents.defaults.temperature as f64,
             max_tokens: self.config.agents.defaults.max_tokens as u64,
             memory_window: self.config.agents.defaults.memory_window,
-            model_name: self.config.agents.defaults.model.clone(),
             model_overrides: crate::agent::r#loop::ModelOverrides::defaults(),
             memory_index: None,
         })
     }
 
     async fn run_subagent(
-        mut agent_loop: AgentLoop<CompletionModelHandle<'static>>,
+        mut agent_loop: AgentLoop,
         session_key: &str,
         task: &str,
     ) -> Result<String> {
