@@ -8,6 +8,10 @@ license.workspace = true
 name = "patina"
 path = "src/main.rs"
 
+[features]
+default = ["local-transcription"]
+local-transcription = ["patina-transcribe/parakeet"]
+
 [dependencies]
 patina-core = { workspace = true }
 patina-channels = { workspace = true }
@@ -23,6 +27,6 @@ dirs = { workspace = true }
 rustyline = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
-patina-transcribe = { workspace = true, features = ["parakeet"] }
+patina-transcribe = { workspace = true }
 termimad = { workspace = true }
 nix = { workspace = true }
