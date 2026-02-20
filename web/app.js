@@ -26,6 +26,7 @@
   var chatAreaEl = document.getElementById("chat-area");
   var usageViewEl = document.getElementById("usage-view");
   var headerH1 = document.querySelector("#chat-area header h1");
+  var chatIdEl = document.getElementById("chat-id");
 
   var ws = null;
   var reconnectDelay = 1000;
@@ -463,6 +464,7 @@
     removeThinking();
     renderSidebar();
     updateHeaderPersona();
+    chatIdEl.textContent = id ? id.slice(0, 8) : "";
 
     // Request history for this chat from server
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1102,14 +1104,32 @@
     appEl.classList.add("sidebar-hidden");
   }
 
+  chatIdEl.addEventListener("click", function () {
+    if (activeChatId) {
+      var sessionKey = "web:" + activeChatId;
+      var ta = document.createElement("textarea");
+      ta.value = sessionKey;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      var prev = chatIdEl.textContent;
+      chatIdEl.textContent = "copied!";
+      setTimeout(function () {
+        chatIdEl.textContent = prev;
+      }, 1000);
+    }
+  });
+
   loadSessions();
   syncSessions();
 
   if (sessions.length === 0) {
     createNewChat();
   } else {
-    activeChatId = sessions[0].id;
-    renderSidebar();
+    switchChat(sessions[0].id);
   }
 
   // Pre-fetch personas so header badge and picker are ready

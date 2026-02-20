@@ -260,6 +260,20 @@ header h1 {
     color: var(--status-reconnecting);
 }
 
+.chat-id {
+    font-size: 11px;
+    font-family: monospace;
+    color: var(--text-secondary);
+    opacity: 0.5;
+    cursor: pointer;
+    flex-shrink: 0;
+    user-select: none;
+}
+
+.chat-id:hover {
+    opacity: 0.8;
+}
+
 #messages {
     flex: 1;
     overflow-y: auto;
