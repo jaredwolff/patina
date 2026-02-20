@@ -11,6 +11,10 @@
       "default": {
         "provider": "ollama",
         "model": "llama3"
+      },
+      "consolidation": {
+        "provider": "ollama",
+        "model": "llama3"
       }
     }
   },
@@ -24,6 +28,12 @@
       "webhookUrl": null,
       "webhookListen": "0.0.0.0",
       "webhookPort": 8443
+    },
+    "slack": {
+      "enabled": false,
+      "appToken": "",
+      "botToken": "",
+      "allowFrom": []
     }
   },
   "providers": {

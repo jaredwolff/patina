@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use patina_channels::manager::ChannelManager;
+use patina_channels::slack::SlackChannel;
 use patina_channels::telegram::TelegramChannel;
 use patina_config::{find_config_path, load_config, resolve_workspace};
 use patina_core::agent::subagent::SubagentManager;
@@ -698,6 +699,19 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
         }
     }
 
+    // Register Slack channel if enabled
+    if config.channels.slack.enabled {
+        match SlackChannel::new(config.channels.slack.clone()) {
+            Ok(sl) => {
+                channel_manager.register(Arc::new(sl)).await;
+                tracing::info!("Slack channel registered");
+            }
+            Err(e) => {
+                tracing::error!("Failed to create Slack channel: {e}");
+            }
+        }
+    }
+
     // Start all channels (spawns polling + outbound dispatcher)
     let enabled = channel_manager.enabled_channels().await;
     if enabled.is_empty() {
@@ -1268,6 +1282,15 @@ fn run_onboard(config_arg: Option<PathBuf>, non_interactive: bool) -> Result<()>
                     prompt_with_default("Telegram bot token", &cfg.channels.telegram.token)?;
             }
 
+            let enable_slack = prompt_yes_no("Enable Slack channel?", false)?;
+            cfg.channels.slack.enabled = enable_slack;
+            if enable_slack {
+                cfg.channels.slack.app_token =
+                    prompt_with_default("Slack app token (xapp-*)", &cfg.channels.slack.app_token)?;
+                cfg.channels.slack.bot_token =
+                    prompt_with_default("Slack bot token (xoxb-*)", &cfg.channels.slack.bot_token)?;
+            }
+
             let mode = prompt_with_default("Transcription mode (auto/local/groq)", "auto")?;
             cfg.transcription.mode = match mode.to_lowercase().as_str() {
                 "local" => patina_config::TranscriptionMode::Local,
@@ -1677,6 +1700,46 @@ fn run_channel_command(action: ChannelCommands, config: &patina_config::Config) 
                 }
                 if let Some(ref proxy) = tg.proxy {
                     println!("    Proxy:   {proxy}");
+                }
+            }
+
+            // Slack
+            let sl = &config.channels.slack;
+            println!();
+            println!("  Slack:");
+            println!("    Enabled: {}", sl.enabled);
+            if sl.enabled {
+                let app_display = if sl.app_token.len() > 10 {
+                    format!(
+                        "{}...{}",
+                        &sl.app_token[..6],
+                        &sl.app_token[sl.app_token.len() - 4..]
+                    )
+                } else if sl.app_token.is_empty() {
+                    "(not set)".into()
+                } else {
+                    "***".into()
+                };
+                let bot_display = if sl.bot_token.len() > 10 {
+                    format!(
+                        "{}...{}",
+                        &sl.bot_token[..6],
+                        &sl.bot_token[sl.bot_token.len() - 4..]
+                    )
+                } else if sl.bot_token.is_empty() {
+                    "(not set)".into()
+                } else {
+                    "***".into()
+                };
+                println!("    App Token: {app_display}");
+                println!("    Bot Token: {bot_display}");
+                if sl.allow_from.is_empty() {
+                    println!("    Access:    open (no allowFrom configured)");
+                } else {
+                    println!(
+                        "    Access:    restricted to {} user(s)",
+                        sl.allow_from.len()
+                    );
                 }
             }
         }

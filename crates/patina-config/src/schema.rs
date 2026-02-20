@@ -65,6 +65,7 @@ impl Default for AgentDefaults {
 #[serde(rename_all = "camelCase", default)]
 pub struct ChannelsConfig {
     pub telegram: TelegramConfig,
+    pub slack: SlackConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -91,6 +92,17 @@ pub enum TelegramMode {
     #[default]
     Polling,
     Webhook,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SlackConfig {
+    pub enabled: bool,
+    /// App-level token (xapp-*) for Socket Mode WebSocket connection.
+    pub app_token: String,
+    /// Bot token (xoxb-*) for Web API calls.
+    pub bot_token: String,
+    pub allow_from: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -269,6 +281,34 @@ mod tests {
         assert!(cfg.channels.telegram.webhook_url.is_none());
         assert!(cfg.channels.telegram.webhook_listen.is_none());
         assert!(cfg.channels.telegram.webhook_port.is_none());
+    }
+
+    #[test]
+    fn slack_config_defaults() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!cfg.channels.slack.enabled);
+        assert!(cfg.channels.slack.app_token.is_empty());
+        assert!(cfg.channels.slack.bot_token.is_empty());
+        assert!(cfg.channels.slack.allow_from.is_empty());
+    }
+
+    #[test]
+    fn slack_config_parsed() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "channels": {
+                "slack": {
+                    "enabled": true,
+                    "appToken": "xapp-test-token",
+                    "botToken": "xoxb-test-token",
+                    "allowFrom": ["U123", "alice"]
+                }
+            }
+        }))
+        .unwrap();
+        assert!(cfg.channels.slack.enabled);
+        assert_eq!(cfg.channels.slack.app_token, "xapp-test-token");
+        assert_eq!(cfg.channels.slack.bot_token, "xoxb-test-token");
+        assert_eq!(cfg.channels.slack.allow_from, vec!["U123", "alice"]);
     }
 
     #[test]
