@@ -84,9 +84,7 @@ impl ContextBuilder {
         if !skills_summary.is_empty() {
             parts.push(format!(
                 "# Skills\n\n\
-                 The following skills extend your capabilities. To use a skill, \
-                 read its SKILL.md file using the read_file tool.\n\
-                 Skills with available=\"false\" need dependencies installed first.\n\n\
+                 Use read_file to load a skill's SKILL.md before using it.\n\n\
                  {skills_summary}"
             ));
         }
@@ -130,14 +128,8 @@ When writing scripts, prefer Python (run with `uv run`) over bash unless it's a 
 
 ## Environment
 - Time: {now} ({tz})
-- Runtime: {os} {arch}, Rust
-- Workspace: {workspace_path}
-- Memory: {workspace_path}/memory/MEMORY.md
-- History: {workspace_path}/memory/HISTORY.md
-- Skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
-
-To save important information, write to {workspace_path}/memory/MEMORY.md
-To recall past events or user preferences, use the memory_search tool before answering."#
+- OS: {os} {arch}
+- Workspace: {workspace_path}"#
         )
     }
 

@@ -844,11 +844,8 @@ Respond with ONLY valid JSON, no markdown fences."#,
             }
 
             // Add tool results as a user message.
-            // Keep the continuation prompt minimal to avoid the model over-interpreting results.
             tool_results.push(UserContent::Text(Text {
-                text:
-                    "If more tool calls are needed, make them. Otherwise, respond with the result."
-                        .into(),
+                text: "Continue.".into(),
             }));
             current_prompt = Message::User {
                 content: OneOrMany::many(tool_results).unwrap_or_else(|_| {

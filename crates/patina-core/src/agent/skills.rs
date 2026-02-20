@@ -134,28 +134,23 @@ impl SkillsLoader {
             return String::new();
         }
 
-        let mut lines = vec!["<skills>".to_string()];
+        let mut lines = Vec::new();
         for s in &skills {
             if s.always {
                 continue; // Always-loaded skills are shown in full, not in summary
             }
-            let avail = if s.available { "true" } else { "false" };
-            lines.push(format!("  <skill available=\"{avail}\">"));
-            lines.push(format!("    <name>{}</name>", xml_escape(&s.name)));
-            lines.push(format!(
-                "    <description>{}</description>",
-                xml_escape(&s.description)
-            ));
-            lines.push(format!("    <location>{}</location>", s.path.display()));
-            if !s.missing_requirements.is_empty() {
-                lines.push(format!(
-                    "    <requires>{}</requires>",
-                    xml_escape(&s.missing_requirements.join(", "))
-                ));
+            let mut line = format!(
+                "- **{}** — {} (`{}`)",
+                s.name,
+                s.description,
+                s.path.display()
+            );
+            if !s.available {
+                let missing = s.missing_requirements.join(", ");
+                line.push_str(&format!(" [needs: {missing}]"));
             }
-            lines.push("  </skill>".to_string());
+            lines.push(line);
         }
-        lines.push("</skills>".to_string());
         lines.join("\n")
     }
 
@@ -286,13 +281,6 @@ impl SkillsLoader {
             content
         }
     }
-}
-
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 impl std::fmt::Display for SkillSource {

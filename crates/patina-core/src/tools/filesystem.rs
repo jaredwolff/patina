@@ -116,7 +116,22 @@ impl Tool for ReadFileTool {
                     return Ok(format!("Error: Not a file: {path}"));
                 }
                 match std::fs::read_to_string(&file_path) {
-                    Ok(content) => Ok(content),
+                    Ok(content) => {
+                        const MAX_LEN: usize = 50_000;
+                        if content.len() > MAX_LEN {
+                            let mut end = MAX_LEN;
+                            while end > 0 && !content.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            Ok(format!(
+                                "{}\n... (truncated, {} more chars)",
+                                &content[..end],
+                                content.len() - end
+                            ))
+                        } else {
+                            Ok(content)
+                        }
+                    }
                     Err(e) => Ok(format!("Error reading file: {e}")),
                 }
             }
