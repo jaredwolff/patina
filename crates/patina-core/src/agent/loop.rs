@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::Result;
 #[allow(deprecated)]
 use rig::client::completion::CompletionModelHandle;
-use rig::completion::{CompletionModel, CompletionRequest, Message, ToolDefinition};
+use rig::completion::{CompletionModel, CompletionRequest, GetTokenUsage, Message, ToolDefinition};
 use rig::message::{
     AssistantContent, Reasoning, Text, ToolCall, ToolResult, ToolResultContent, UserContent,
 };
@@ -88,6 +88,12 @@ impl ModelOverrides {
 ///
 /// Uses rig's CompletionModel directly for LLM calls but runs its own
 /// tool dispatch loop (like the Python version) for maximum control.
+/// A streaming text chunk from the LLM, forwarded to the UI in real-time.
+pub struct StreamChunk {
+    pub session_key: String,
+    pub text: String,
+}
+
 #[allow(deprecated)]
 pub struct AgentLoop {
     pub models: ModelPool,
@@ -104,6 +110,8 @@ pub struct AgentLoop {
     pub channel_rules: std::collections::HashMap<String, String>,
     /// Optional usage tracker for recording LLM API token consumption.
     pub usage_tracker: Option<Arc<UsageTracker>>,
+    /// Optional sender for streaming text chunks to the UI.
+    pub stream_tx: Option<tokio::sync::mpsc::UnboundedSender<StreamChunk>>,
 }
 
 #[allow(deprecated)]
@@ -660,50 +668,37 @@ Respond with ONLY valid JSON, no markdown fences."#,
             };
 
             let llm_start = std::time::Instant::now();
-            let response = model
-                .completion(request)
+
+            // Use streaming to get text chunks in real-time
+            let mut stream = model
+                .stream(request)
                 .await
-                .map_err(|e| anyhow::anyhow!("LLM completion error: {e}"))?;
-            let llm_elapsed = llm_start.elapsed();
+                .map_err(|e| anyhow::anyhow!("LLM stream error: {e}"))?;
 
-            // Record usage
-            if let Some(ref tracker) = self.usage_tracker {
-                tracker.record(&UsageRecord {
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    session_key: session_key.to_string(),
-                    model: model_name.clone(),
-                    provider: provider_name.clone(),
-                    agent: agent_name.to_string(),
-                    input_tokens: response.usage.input_tokens,
-                    output_tokens: response.usage.output_tokens,
-                    total_tokens: response.usage.total_tokens,
-                    cached_input_tokens: response.usage.cached_input_tokens,
-                    call_type: "chat".to_string(),
-                });
-            }
-
-            if response.usage.cached_input_tokens > 0 {
-                debug!(
-                    "Prompt cache hit: {} cached input tokens",
-                    response.usage.cached_input_tokens
-                );
-            }
-
-            // Check what the model returned
             let mut has_tool_calls = false;
             let mut text_content = String::new();
             let mut tool_calls_to_execute: Vec<ToolCall> = Vec::new();
 
-            for content in response.choice.iter() {
-                match content {
-                    AssistantContent::Text(t) => {
+            use futures::StreamExt;
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(rig::streaming::StreamedAssistantContent::Text(t)) => {
                         text_content.push_str(&t.text);
+                        // Forward text chunk to UI if streaming is enabled
+                        if let Some(ref tx) = self.stream_tx {
+                            let _ = tx.send(StreamChunk {
+                                session_key: session_key.to_string(),
+                                text: t.text.clone(),
+                            });
+                        }
                     }
-                    AssistantContent::ToolCall(tc) => {
+                    Ok(rig::streaming::StreamedAssistantContent::ToolCall {
+                        tool_call, ..
+                    }) => {
                         has_tool_calls = true;
-                        tool_calls_to_execute.push(tc.clone());
+                        tool_calls_to_execute.push(tool_call);
                     }
-                    AssistantContent::Reasoning(r) => {
+                    Ok(rig::streaming::StreamedAssistantContent::Reasoning(r)) => {
                         let reasoning_text = r.reasoning.join(" ");
                         info!("Model reasoning: {reasoning_text}");
                         if !accumulated_reasoning.is_empty() {
@@ -711,9 +706,48 @@ Respond with ONLY valid JSON, no markdown fences."#,
                         }
                         accumulated_reasoning.push_str(&reasoning_text);
                     }
-                    _ => {}
+                    Ok(rig::streaming::StreamedAssistantContent::ReasoningDelta {
+                        reasoning,
+                        ..
+                    }) => {
+                        if !accumulated_reasoning.is_empty() {
+                            accumulated_reasoning.push('\n');
+                        }
+                        accumulated_reasoning.push_str(&reasoning);
+                    }
+                    Ok(rig::streaming::StreamedAssistantContent::Final(ref resp)) => {
+                        // Extract usage from the final response
+                        if let Some(usage) = resp.token_usage() {
+                            if let Some(ref tracker) = self.usage_tracker {
+                                tracker.record(&UsageRecord {
+                                    timestamp: chrono::Utc::now().to_rfc3339(),
+                                    session_key: session_key.to_string(),
+                                    model: model_name.clone(),
+                                    provider: provider_name.clone(),
+                                    agent: agent_name.to_string(),
+                                    input_tokens: usage.input_tokens,
+                                    output_tokens: usage.output_tokens,
+                                    total_tokens: usage.total_tokens,
+                                    cached_input_tokens: usage.cached_input_tokens,
+                                    call_type: "chat".to_string(),
+                                });
+                            }
+                            if usage.cached_input_tokens > 0 {
+                                debug!(
+                                    "Prompt cache hit: {} cached input tokens",
+                                    usage.cached_input_tokens
+                                );
+                            }
+                        }
+                    }
+                    Ok(_) => {} // ToolCallDelta — ignore partial tool call updates
+                    Err(e) => {
+                        return Err(anyhow::anyhow!("LLM stream error: {e}"));
+                    }
                 }
             }
+
+            let llm_elapsed = llm_start.elapsed();
 
             let reasoning = if accumulated_reasoning.is_empty() {
                 None
@@ -749,7 +783,7 @@ Respond with ONLY valid JSON, no markdown fences."#,
             chat_history.push(current_prompt);
             chat_history.push(Message::Assistant {
                 id: None,
-                content: response.choice.clone(),
+                content: stream.choice.clone(),
             });
 
             // Execute each tool call

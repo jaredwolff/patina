@@ -10,5 +10,5 @@ pub use context::ContextBuilder;
 pub use memory::MemoryStore;
 pub use memory_index::MemoryIndex;
 pub use model_pool::ModelPool;
-pub use r#loop::{AgentLoop, ConsolidationResult, ConsolidationTask, ModelOverrides};
+pub use r#loop::{AgentLoop, ConsolidationResult, ConsolidationTask, ModelOverrides, StreamChunk};
 pub use skills::SkillsLoader;

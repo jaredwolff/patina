@@ -37,6 +37,8 @@
   var sessions = [];
   var activeChatId = null;
   var unreadChats = {};
+  var streamingDiv = null;
+  var streamingText = "";
 
   function loadSessions() {
     // Migrate from old single-session format
@@ -567,9 +569,29 @@
             });
           }
           break;
+        case "text_delta":
+          if (data.chatId === activeChatId && data.content) {
+            removeThinking();
+            if (!streamingDiv) {
+              streamingDiv = document.createElement("div");
+              streamingDiv.className = "message assistant";
+              messagesEl.appendChild(streamingDiv);
+              streamingText = "";
+            }
+            streamingText += data.content;
+            streamingDiv.innerHTML = renderMarkdown(streamingText);
+            scrollToBottom();
+          }
+          break;
         case "message":
           if (data.chatId === activeChatId) {
-            addMessage("assistant", data.content);
+            if (streamingDiv) {
+              streamingDiv.innerHTML = renderMarkdown(data.content);
+              streamingDiv = null;
+              streamingText = "";
+            } else {
+              addMessage("assistant", data.content);
+            }
           } else if (data.chatId) {
             unreadChats[data.chatId] = true;
             renderSidebar();

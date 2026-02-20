@@ -634,6 +634,7 @@ fn build_agent_loop(
         memory_index: Some(memory_index),
         channel_rules: HashMap::new(),
         usage_tracker: Some(usage_tracker.clone()),
+        stream_tx: None,
     };
 
     Ok((agent_loop, context_tools, cron_service, bus))
@@ -742,6 +743,7 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
     }
 
     // Register Web channel if enabled
+    let mut web_channel_ref: Option<Arc<WebChannel>> = None;
     if config.channels.web.enabled {
         let sessions_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -757,7 +759,9 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
             config.agents.pricing.clone(),
         ) {
             Ok(web) => {
-                channel_manager.register(Arc::new(web)).await;
+                let web = Arc::new(web);
+                web_channel_ref = Some(web.clone());
+                channel_manager.register(web).await;
                 tracing::info!(
                     "Web channel registered on {}:{}",
                     config.gateway.host,
@@ -795,6 +799,25 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
     channel_manager.start_all(bus.inbound_tx.clone()).await?;
 
     tracing::info!("Gateway running. Press Ctrl-C to stop.");
+
+    // Set up streaming text chunk forwarder to web UI
+    if let Some(ref web_ch) = web_channel_ref {
+        let (stream_tx, mut stream_rx) =
+            tokio::sync::mpsc::unbounded_channel::<patina_core::agent::r#loop::StreamChunk>();
+        agent_loop.stream_tx = Some(stream_tx);
+        let web_ch = web_ch.clone();
+        tokio::spawn(async move {
+            while let Some(chunk) = stream_rx.recv().await {
+                // Session key is "web:chat_id" — extract the chat_id part
+                let chat_id = chunk
+                    .session_key
+                    .split_once(':')
+                    .map(|(_, id)| id)
+                    .unwrap_or(&chunk.session_key);
+                web_ch.broadcast_chunk(chat_id, &chunk.text);
+            }
+        });
+    }
 
     // Channel for background consolidation completions
     let (consol_tx, mut consol_rx) = tokio::sync::mpsc::channel::<ConsolidationResult>(16);

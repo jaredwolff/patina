@@ -253,6 +253,24 @@ impl Channel for WebChannel {
     }
 }
 
+impl WebChannel {
+    /// Broadcast a streaming text chunk to all connected WebSocket clients.
+    pub fn broadcast_chunk(&self, chat_id: &str, text: &str) {
+        let out = WsOutMsg {
+            msg_type: "text_delta".to_string(),
+            content: Some(text.to_string()),
+            chat_id: Some(chat_id.to_string()),
+            timestamp: None,
+            messages: None,
+        };
+        if let Ok(json) = serde_json::to_string(&out) {
+            for entry in self.connections.iter() {
+                let _ = entry.value().send(Message::Text(json.clone().into()));
+            }
+        }
+    }
+}
+
 // --- Axum Handlers ---
 
 async fn serve_index() -> Html<&'static str> {

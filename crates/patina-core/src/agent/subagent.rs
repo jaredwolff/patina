@@ -235,6 +235,7 @@ impl SubagentManager {
             memory_index: None,
             channel_rules: std::collections::HashMap::new(),
             usage_tracker: self.usage_tracker.clone(),
+            stream_tx: None,
         })
     }
 

@@ -2478,6 +2478,7 @@ dependencies = [
  "chrono",
  "croner",
  "dirs",
+ "futures",
  "glob",
  "html-escape",
  "include_dir",
