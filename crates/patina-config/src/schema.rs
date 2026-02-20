@@ -68,7 +68,7 @@ impl Default for AgentDefaults {
             max_tokens: 8192,
             temperature: 0.7,
             max_tool_iterations: 20,
-            memory_window: 50,
+            memory_window: 30,
         }
     }
 }

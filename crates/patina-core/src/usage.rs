@@ -463,7 +463,10 @@ pub fn calculate_cost(
     cached_input_tokens: u64,
     pricing: &ModelPricing,
 ) -> f64 {
-    let input_cost = (input_tokens as f64 / 1_000_000.0) * pricing.input;
+    // rig-core includes cached tokens in input_tokens, so subtract them
+    // to avoid double-counting: uncached tokens at full rate, cached at cached rate.
+    let uncached = input_tokens.saturating_sub(cached_input_tokens);
+    let input_cost = (uncached as f64 / 1_000_000.0) * pricing.input;
     let output_cost = (output_tokens as f64 / 1_000_000.0) * pricing.output;
     let cached_rate = if pricing.cached_input > 0.0 {
         pricing.cached_input
@@ -699,9 +702,10 @@ mod tests {
             output: 15.0,
             cached_input: 0.30,
         };
-        // 1M input = $3, 500K output = $7.50, 200K cached = $0.06
+        // input_tokens includes cached, so: 800K uncached × $3 = $2.40,
+        // 500K output × $15 = $7.50, 200K cached × $0.30 = $0.06
         let cost = calculate_cost(1_000_000, 500_000, 200_000, &pricing);
-        assert!((cost - 10.56).abs() < 0.001);
+        assert!((cost - 9.96).abs() < 0.001);
     }
 
     #[test]
@@ -711,9 +715,10 @@ mod tests {
             output: 15.0,
             cached_input: 0.0, // should use input rate
         };
-        // 1M input = $3, 0 output, 1M cached at input rate = $3
+        // input_tokens includes cached, so: 0 uncached × $3 = $0,
+        // 0 output, 1M cached at input rate = $3
         let cost = calculate_cost(1_000_000, 0, 1_000_000, &pricing);
-        assert!((cost - 6.0).abs() < 0.001);
+        assert!((cost - 3.0).abs() < 0.001);
     }
 
     #[test]

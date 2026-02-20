@@ -5,7 +5,7 @@
       "maxTokens": 8192,
       "temperature": 0.7,
       "maxToolIterations": 20,
-      "memoryWindow": 50
+      "memoryWindow": 30
     },
     "models": {
       "default": {

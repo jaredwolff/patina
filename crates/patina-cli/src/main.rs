@@ -309,8 +309,10 @@ fn create_model_for(
                 .api_key(&key)
                 .build()
                 .map_err(|e| anyhow::anyhow!("Failed to create Anthropic client: {e}"))?;
-            let model = client.completion_model(model_name);
-            tracing::info!("Using Anthropic provider with model '{model_name}'");
+            let model = client.completion_model(model_name).with_prompt_caching();
+            tracing::info!(
+                "Using Anthropic provider with model '{model_name}' (prompt caching enabled)"
+            );
             Ok(CompletionModelHandle::new(Arc::new(model)))
         }
 

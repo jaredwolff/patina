@@ -682,6 +682,13 @@ Respond with ONLY valid JSON, no markdown fences."#,
                 });
             }
 
+            if response.usage.cached_input_tokens > 0 {
+                debug!(
+                    "Prompt cache hit: {} cached input tokens",
+                    response.usage.cached_input_tokens
+                );
+            }
+
             // Check what the model returned
             let mut has_tool_calls = false;
             let mut text_content = String::new();
