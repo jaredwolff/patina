@@ -39,6 +39,11 @@ impl ContextBuilder {
         }
     }
 
+    /// Set or clear the preamble override (for persona support).
+    pub fn set_preamble_override(&mut self, preamble: Option<String>) {
+        self.preamble_override = preamble;
+    }
+
     /// Access the memory store for consolidation.
     pub fn memory(&self) -> &MemoryStore {
         &self.memory

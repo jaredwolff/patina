@@ -11,7 +11,12 @@
             <aside id="sidebar">
                 <div id="sidebar-header">
                     <h2>Chats</h2>
-                    <button id="new-chat-btn" title="New Chat">+</button>
+                    <div id="sidebar-actions">
+                        <button id="persona-mgr-btn" title="Manage Personas">
+                            &#9881;
+                        </button>
+                        <button id="new-chat-btn" title="New Chat">+</button>
+                    </div>
                 </div>
                 <div id="session-list"></div>
             </aside>
@@ -37,6 +42,93 @@
                 </form>
             </main>
         </div>
+        <!-- Persona picker modal (shown on new chat when personas exist) -->
+        <div id="persona-picker" class="modal hidden">
+            <div class="modal-content">
+                <h3>Choose a Persona</h3>
+                <div id="persona-picker-list"></div>
+                <button id="persona-picker-none" class="btn-secondary">
+                    No Persona (default)
+                </button>
+                <button id="persona-picker-cancel" class="btn-text">
+                    Cancel
+                </button>
+            </div>
+        </div>
+
+        <!-- Persona manager modal -->
+        <div id="persona-manager" class="modal hidden">
+            <div class="modal-content modal-wide">
+                <div class="modal-header">
+                    <h3>Manage Personas</h3>
+                    <button id="persona-mgr-close" class="btn-text">
+                        &times;
+                    </button>
+                </div>
+                <div id="persona-mgr-list"></div>
+                <button id="persona-mgr-add" class="btn-primary">
+                    + New Persona
+                </button>
+            </div>
+        </div>
+
+        <!-- Persona editor modal -->
+        <div id="persona-editor" class="modal hidden">
+            <div class="modal-content modal-wide">
+                <h3 id="persona-editor-title">New Persona</h3>
+                <form id="persona-editor-form">
+                    <label
+                        >Key (unique ID)
+                        <input
+                            type="text"
+                            id="pe-key"
+                            required
+                            placeholder="e.g. coder"
+                        />
+                    </label>
+                    <label
+                        >Name
+                        <input
+                            type="text"
+                            id="pe-name"
+                            required
+                            placeholder="e.g. Code Assistant"
+                        />
+                    </label>
+                    <label
+                        >Description
+                        <input
+                            type="text"
+                            id="pe-description"
+                            placeholder="Short description"
+                        />
+                    </label>
+                    <label
+                        >System Prompt
+                        <textarea
+                            id="pe-preamble"
+                            rows="5"
+                            placeholder="Custom system prompt..."
+                        ></textarea>
+                    </label>
+                    <label
+                        >Model Tier
+                        <select id="pe-model-tier"></select>
+                    </label>
+                    <div class="modal-actions">
+                        <button
+                            type="button"
+                            id="pe-cancel"
+                            class="btn-secondary"
+                        >
+                            Cancel
+                        </button>
+                        <button type="submit" class="btn-primary">Save</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
         <script src="/app.js"></script>
     </body>
 </html>

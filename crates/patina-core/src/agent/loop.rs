@@ -129,17 +129,36 @@ impl AgentLoop {
         }
     }
 
-    /// Process a single user message and return the assistant's response
-    /// plus a flag indicating whether memory consolidation is needed.
+    /// Process a single user message with default system prompt and model tier.
     pub async fn process_message(
         &mut self,
         session_key: &str,
         user_message: &str,
         media: Option<&[String]>,
     ) -> Result<(String, bool)> {
+        self.process_message_with_persona(session_key, user_message, media, None, None)
+            .await
+    }
+
+    /// Process a single user message with optional persona overrides.
+    ///
+    /// - `preamble_override`: replaces the default system prompt when `Some`
+    /// - `model_tier`: selects a model tier (falls back to "default" when `None`)
+    pub async fn process_message_with_persona(
+        &mut self,
+        session_key: &str,
+        user_message: &str,
+        media: Option<&[String]>,
+        preamble_override: Option<&str>,
+        model_tier: Option<&str>,
+    ) -> Result<(String, bool)> {
         if Self::consume_interrupt(session_key) {
             return Ok(("Interrupted before processing.".to_string(), false));
         }
+
+        // Apply preamble override if provided
+        self.context
+            .set_preamble_override(preamble_override.map(|s| s.to_string()));
 
         let session = self.sessions.get_or_create_checked(session_key)?;
         let history = session.get_history(self.memory_window);
@@ -148,6 +167,9 @@ impl AgentLoop {
         let messages_json =
             self.context
                 .build_messages(&history, user_message, None, None, media)?;
+
+        // Clear preamble override so subsequent calls use defaults
+        self.context.set_preamble_override(None);
 
         // Log context summary
         {
@@ -245,6 +267,7 @@ impl AgentLoop {
             .collect();
 
         // Run the agent loop with tool calling
+        let tier = model_tier.unwrap_or("default");
         let (response, tools_used, reasoning) = self
             .run_loop(
                 session_key,
@@ -252,7 +275,7 @@ impl AgentLoop {
                 chat_history,
                 prompt,
                 &tool_defs,
-                "default",
+                tier,
             )
             .await?;
 

@@ -7,16 +7,17 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{Query, State, WebSocketUpgrade};
+use axum::extract::{Path as AxumPath, Query, State, WebSocketUpgrade};
 use axum::http::header;
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, put};
 use axum::Router;
 use dashmap::DashMap;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use patina_config::{GatewayConfig, WebConfig};
 use patina_core::bus::InboundMessage;
+use patina_core::persona::PersonaStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{error, info, warn};
@@ -30,10 +31,9 @@ pub struct WebChannel {
     config: WebConfig,
     gateway_config: GatewayConfig,
     sessions_dir: PathBuf,
-    /// Keyed by connection ID (UUID). Server is stateless about which chat
-    /// is "active" — the client includes chatId in every message and filters
-    /// inbound responses by chatId.
     connections: Arc<DashMap<String, WsSender>>,
+    persona_store: Arc<tokio::sync::Mutex<PersonaStore>>,
+    model_tiers: Vec<String>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
 }
 
@@ -43,6 +43,8 @@ struct AppState {
     sessions_dir: PathBuf,
     connections: Arc<DashMap<String, WsSender>>,
     inbound_tx: mpsc::Sender<InboundMessage>,
+    persona_store: Arc<tokio::sync::Mutex<PersonaStore>>,
+    model_tiers: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -82,6 +84,8 @@ struct WsInMsg {
     #[serde(default)]
     #[serde(rename = "chatId")]
     chat_id: String,
+    #[serde(default)]
+    persona: String,
 }
 
 impl WebChannel {
@@ -89,12 +93,16 @@ impl WebChannel {
         config: WebConfig,
         gateway_config: GatewayConfig,
         sessions_dir: PathBuf,
+        persona_store: Arc<tokio::sync::Mutex<PersonaStore>>,
+        model_tiers: Vec<String>,
     ) -> Result<Self> {
         Ok(Self {
             config,
             gateway_config,
             sessions_dir,
             connections: Arc::new(DashMap::new()),
+            persona_store,
+            model_tiers,
             shutdown_tx: Mutex::new(None),
         })
     }
@@ -112,6 +120,8 @@ impl Channel for WebChannel {
             sessions_dir: self.sessions_dir.clone(),
             connections: self.connections.clone(),
             inbound_tx,
+            persona_store: self.persona_store.clone(),
+            model_tiers: self.model_tiers.clone(),
         };
 
         let router = Router::new()
@@ -120,6 +130,15 @@ impl Channel for WebChannel {
             .route("/app.js", get(serve_js))
             .route("/ws", get(ws_upgrade))
             .route("/api/sessions", get(api_list_sessions))
+            .route(
+                "/api/personas",
+                get(api_list_personas).post(api_create_persona),
+            )
+            .route(
+                "/api/personas/{key}",
+                put(api_update_persona).delete(api_delete_persona),
+            )
+            .route("/api/model-tiers", get(api_model_tiers))
             .with_state(state);
 
         let addr: SocketAddr = format!("{}:{}", self.gateway_config.host, self.gateway_config.port)
@@ -221,6 +240,132 @@ async fn api_list_sessions(State(state): State<AppState>) -> impl IntoResponse {
     axum::Json(sessions)
 }
 
+// --- Persona API ---
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersonaResponse {
+    key: String,
+    name: String,
+    description: String,
+    preamble: String,
+    model_tier: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersonaRequest {
+    #[serde(default)]
+    key: String,
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    preamble: String,
+    #[serde(default)]
+    model_tier: String,
+}
+
+async fn api_list_personas(State(state): State<AppState>) -> impl IntoResponse {
+    let store = state.persona_store.lock().await;
+    let personas: Vec<PersonaResponse> = store
+        .list()
+        .iter()
+        .map(|(k, p)| PersonaResponse {
+            key: k.clone(),
+            name: p.name.clone(),
+            description: p.description.clone(),
+            preamble: p.preamble.clone(),
+            model_tier: p.model_tier.clone(),
+        })
+        .collect();
+    axum::Json(personas)
+}
+
+async fn api_create_persona(
+    State(state): State<AppState>,
+    axum::Json(req): axum::Json<PersonaRequest>,
+) -> impl IntoResponse {
+    if req.key.is_empty() || req.name.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({"error": "key and name are required"})),
+        );
+    }
+    let mut store = state.persona_store.lock().await;
+    let persona = patina_core::persona::Persona {
+        name: req.name,
+        description: req.description,
+        preamble: req.preamble,
+        model_tier: req.model_tier,
+    };
+    match store.upsert(req.key.clone(), persona) {
+        Ok(()) => (
+            axum::http::StatusCode::CREATED,
+            axum::Json(serde_json::json!({"key": req.key})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+async fn api_update_persona(
+    State(state): State<AppState>,
+    AxumPath(key): AxumPath<String>,
+    axum::Json(req): axum::Json<PersonaRequest>,
+) -> impl IntoResponse {
+    if req.name.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({"error": "name is required"})),
+        );
+    }
+    let mut store = state.persona_store.lock().await;
+    let persona = patina_core::persona::Persona {
+        name: req.name,
+        description: req.description,
+        preamble: req.preamble,
+        model_tier: req.model_tier,
+    };
+    match store.upsert(key.clone(), persona) {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            axum::Json(serde_json::json!({"key": key})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+async fn api_delete_persona(
+    State(state): State<AppState>,
+    AxumPath(key): AxumPath<String>,
+) -> impl IntoResponse {
+    let mut store = state.persona_store.lock().await;
+    match store.remove(&key) {
+        Ok(true) => (
+            axum::http::StatusCode::OK,
+            axum::Json(serde_json::json!({"deleted": true})),
+        ),
+        Ok(false) => (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "persona not found"})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+async fn api_model_tiers(State(state): State<AppState>) -> impl IntoResponse {
+    axum::Json(state.model_tiers.clone())
+}
+
 async fn ws_upgrade(
     ws: WebSocketUpgrade,
     Query(params): Query<WsParams>,
@@ -309,13 +454,21 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
 
                         let sender_id = format!("web:{}", &chat_id[..chat_id.len().min(8)]);
 
+                        let mut metadata = HashMap::new();
+                        if !parsed.persona.is_empty() {
+                            metadata.insert(
+                                "persona".to_string(),
+                                serde_json::Value::String(parsed.persona.clone()),
+                            );
+                        }
+
                         let inbound = InboundMessage {
                             channel: "web".to_string(),
                             sender_id,
                             chat_id,
                             content: parsed.content,
                             media: Vec::new(),
-                            metadata: HashMap::new(),
+                            metadata,
                             timestamp: chrono::Local::now().to_rfc3339(),
                         };
                         if let Err(e) = state.inbound_tx.send(inbound).await {
@@ -547,6 +700,12 @@ mod tests {
         PathBuf::from("/tmp/patina-test-sessions")
     }
 
+    fn test_persona_store() -> Arc<tokio::sync::Mutex<PersonaStore>> {
+        Arc::new(tokio::sync::Mutex::new(PersonaStore::load(&PathBuf::from(
+            "/tmp/patina-test-personas.json",
+        ))))
+    }
+
     #[test]
     fn test_is_allowed_empty_allows_all() {
         let ch = WebChannel::new(
@@ -557,6 +716,8 @@ mod tests {
             },
             GatewayConfig::default(),
             test_sessions_dir(),
+            test_persona_store(),
+            vec![],
         )
         .unwrap();
         assert!(ch.is_allowed("anyone"));
@@ -572,6 +733,8 @@ mod tests {
             },
             GatewayConfig::default(),
             test_sessions_dir(),
+            test_persona_store(),
+            vec![],
         )
         .unwrap();
         assert!(ch.is_allowed("web:abc12345"));

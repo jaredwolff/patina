@@ -2,9 +2,11 @@ pub mod agent;
 pub mod bus;
 pub mod cron;
 pub mod heartbeat;
+pub mod persona;
 pub mod session;
 pub mod tools;
 
 // Re-export key types
+pub use persona::{Persona, PersonaStore};
 pub use session::{Message, Session, SessionManager};
 pub use tools::ToolRegistry;

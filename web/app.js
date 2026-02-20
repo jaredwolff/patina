@@ -10,6 +10,8 @@
   var newChatBtn = document.getElementById("new-chat-btn");
   var sidebarToggle = document.getElementById("sidebar-toggle");
   var appEl = document.getElementById("app");
+  var personaMgrBtn = document.getElementById("persona-mgr-btn");
+  var headerH1 = document.querySelector("header h1");
 
   var ws = null;
   var reconnectDelay = 1000;
@@ -59,6 +61,95 @@
         return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
       },
     );
+  }
+
+  // --- Persona State & API ---
+
+  var cachedPersonas = null;
+  var cachedModelTiers = null;
+
+  function fetchPersonas() {
+    return fetch("/api/personas")
+      .then(function (res) {
+        return res.json();
+      })
+      .then(function (list) {
+        cachedPersonas = list;
+        return list;
+      })
+      .catch(function () {
+        return [];
+      });
+  }
+
+  function fetchModelTiers() {
+    return fetch("/api/model-tiers")
+      .then(function (res) {
+        return res.json();
+      })
+      .then(function (tiers) {
+        cachedModelTiers = tiers;
+        return tiers;
+      })
+      .catch(function () {
+        return ["default"];
+      });
+  }
+
+  function createPersona(data) {
+    return fetch("/api/personas", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }).then(function (res) {
+      if (!res.ok)
+        return res.json().then(function (e) {
+          throw new Error(e.error);
+        });
+      cachedPersonas = null;
+      return res.json();
+    });
+  }
+
+  function updatePersona(key, data) {
+    return fetch("/api/personas/" + encodeURIComponent(key), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }).then(function (res) {
+      if (!res.ok)
+        return res.json().then(function (e) {
+          throw new Error(e.error);
+        });
+      cachedPersonas = null;
+      return res.json();
+    });
+  }
+
+  function deletePersona(key) {
+    return fetch("/api/personas/" + encodeURIComponent(key), {
+      method: "DELETE",
+    }).then(function (res) {
+      if (!res.ok)
+        return res.json().then(function (e) {
+          throw new Error(e.error);
+        });
+      cachedPersonas = null;
+      return res.json();
+    });
+  }
+
+  function getSessionPersona(id) {
+    var s = findSession(id);
+    return s ? s.persona || null : null;
+  }
+
+  function getPersonaName(personaKey) {
+    if (!personaKey || !cachedPersonas) return null;
+    for (var i = 0; i < cachedPersonas.length; i++) {
+      if (cachedPersonas[i].key === personaKey) return cachedPersonas[i].name;
+    }
+    return personaKey;
   }
 
   // --- UI ---
@@ -243,11 +334,23 @@
   // --- Chat Management ---
 
   function createNewChat() {
+    // If personas exist, show picker first
+    fetchPersonas().then(function (personas) {
+      if (personas.length > 0) {
+        showPersonaPicker(personas);
+      } else {
+        finishCreateChat(null);
+      }
+    });
+  }
+
+  function finishCreateChat(personaKey) {
     var id = generateUUID();
     var session = {
       id: id,
       title: "New Chat",
       updatedAt: new Date().toISOString(),
+      persona: personaKey || null,
     };
     sessions.unshift(session);
     saveSessions();
@@ -261,6 +364,7 @@
     clearMessages();
     removeThinking();
     renderSidebar();
+    updateHeaderPersona();
 
     // Request history for this chat from server
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -268,6 +372,20 @@
     }
 
     inputEl.focus();
+  }
+
+  function updateHeaderPersona() {
+    // Remove existing badge
+    var existing = headerH1.querySelector(".persona-badge");
+    if (existing) existing.remove();
+
+    var personaKey = getSessionPersona(activeChatId);
+    if (personaKey) {
+      var badge = document.createElement("span");
+      badge.className = "persona-badge";
+      badge.textContent = getPersonaName(personaKey) || personaKey;
+      headerH1.appendChild(badge);
+    }
   }
 
   function updateSessionTitle(id, firstMessage) {
@@ -400,9 +518,15 @@
     updateSessionTitle(activeChatId, text);
     updateSessionTime(activeChatId);
 
-    ws.send(
-      JSON.stringify({ type: "message", content: text, chatId: activeChatId }),
-    );
+    var msg = { type: "message", content: text, chatId: activeChatId };
+
+    // Include persona on first message so gateway stores it in session metadata
+    var personaKey = getSessionPersona(activeChatId);
+    if (personaKey) {
+      msg.persona = personaKey;
+    }
+
+    ws.send(JSON.stringify(msg));
   }
 
   // --- Sync sessions from server ---
@@ -436,6 +560,226 @@
       .catch(function () {});
   }
 
+  // --- Persona Picker ---
+
+  function showPersonaPicker(personas) {
+    var pickerEl = document.getElementById("persona-picker");
+    var listEl = document.getElementById("persona-picker-list");
+    listEl.innerHTML = "";
+
+    personas.forEach(function (p) {
+      var card = document.createElement("div");
+      card.className = "persona-card";
+
+      var name = document.createElement("div");
+      name.className = "persona-card-name";
+      name.textContent = p.name;
+      card.appendChild(name);
+
+      if (p.description) {
+        var desc = document.createElement("div");
+        desc.className = "persona-card-desc";
+        desc.textContent = p.description;
+        card.appendChild(desc);
+      }
+
+      if (p.modelTier && p.modelTier !== "default") {
+        var tier = document.createElement("div");
+        tier.className = "persona-card-tier";
+        tier.textContent = "Model: " + p.modelTier;
+        card.appendChild(tier);
+      }
+
+      card.addEventListener("click", function () {
+        pickerEl.classList.add("hidden");
+        finishCreateChat(p.key);
+      });
+
+      listEl.appendChild(card);
+    });
+
+    pickerEl.classList.remove("hidden");
+  }
+
+  document
+    .getElementById("persona-picker-none")
+    .addEventListener("click", function () {
+      document.getElementById("persona-picker").classList.add("hidden");
+      finishCreateChat(null);
+    });
+
+  document
+    .getElementById("persona-picker-cancel")
+    .addEventListener("click", function () {
+      document.getElementById("persona-picker").classList.add("hidden");
+    });
+
+  // --- Persona Manager ---
+
+  function showPersonaManager() {
+    fetchPersonas().then(function (personas) {
+      var managerEl = document.getElementById("persona-manager");
+      var listEl = document.getElementById("persona-mgr-list");
+      listEl.innerHTML = "";
+
+      personas.forEach(function (p) {
+        var item = document.createElement("div");
+        item.className = "persona-mgr-item";
+
+        var info = document.createElement("div");
+        info.className = "persona-mgr-info";
+
+        var name = document.createElement("div");
+        name.className = "persona-mgr-name";
+        name.textContent = p.name;
+        info.appendChild(name);
+
+        var desc = document.createElement("div");
+        desc.className = "persona-mgr-desc";
+        desc.textContent = p.description || p.key;
+        info.appendChild(desc);
+
+        item.appendChild(info);
+
+        var actions = document.createElement("div");
+        actions.className = "persona-mgr-actions";
+
+        var editBtn = document.createElement("button");
+        editBtn.className = "btn-text";
+        editBtn.textContent = "Edit";
+        editBtn.addEventListener("click", function () {
+          managerEl.classList.add("hidden");
+          showPersonaEditor(p);
+        });
+        actions.appendChild(editBtn);
+
+        var delBtn = document.createElement("button");
+        delBtn.className = "btn-danger";
+        delBtn.textContent = "Delete";
+        delBtn.addEventListener("click", function () {
+          if (confirm('Delete persona "' + p.name + '"?')) {
+            deletePersona(p.key).then(function () {
+              showPersonaManager();
+            });
+          }
+        });
+        actions.appendChild(delBtn);
+
+        item.appendChild(actions);
+        listEl.appendChild(item);
+      });
+
+      if (personas.length === 0) {
+        var empty = document.createElement("div");
+        empty.style.cssText =
+          "text-align:center;color:var(--text-secondary);font-size:13px;padding:16px 0;";
+        empty.textContent = "No personas yet. Create one to get started.";
+        listEl.appendChild(empty);
+      }
+
+      managerEl.classList.remove("hidden");
+    });
+  }
+
+  document
+    .getElementById("persona-mgr-close")
+    .addEventListener("click", function () {
+      document.getElementById("persona-manager").classList.add("hidden");
+    });
+
+  document
+    .getElementById("persona-mgr-add")
+    .addEventListener("click", function () {
+      document.getElementById("persona-manager").classList.add("hidden");
+      showPersonaEditor(null);
+    });
+
+  // --- Persona Editor ---
+
+  var editingPersonaKey = null;
+
+  function showPersonaEditor(persona) {
+    var editorEl = document.getElementById("persona-editor");
+    var titleEl = document.getElementById("persona-editor-title");
+    var keyInput = document.getElementById("pe-key");
+    var nameInput = document.getElementById("pe-name");
+    var descInput = document.getElementById("pe-description");
+    var preambleInput = document.getElementById("pe-preamble");
+    var tierSelect = document.getElementById("pe-model-tier");
+
+    editingPersonaKey = persona ? persona.key : null;
+    titleEl.textContent = persona ? "Edit Persona" : "New Persona";
+
+    keyInput.value = persona ? persona.key : "";
+    keyInput.disabled = !!persona; // Can't change key on edit
+    nameInput.value = persona ? persona.name : "";
+    descInput.value = persona ? persona.description || "" : "";
+    preambleInput.value = persona ? persona.preamble || "" : "";
+
+    // Populate model tier dropdown
+    var populateTiers = cachedModelTiers
+      ? Promise.resolve(cachedModelTiers)
+      : fetchModelTiers();
+
+    populateTiers.then(function (tiers) {
+      tierSelect.innerHTML = "";
+      tiers.forEach(function (t) {
+        var opt = document.createElement("option");
+        opt.value = t;
+        opt.textContent = t;
+        if (persona && persona.modelTier === t) opt.selected = true;
+        tierSelect.appendChild(opt);
+      });
+      // Add "default" if not present
+      if (tiers.indexOf("default") === -1) {
+        var defOpt = document.createElement("option");
+        defOpt.value = "default";
+        defOpt.textContent = "default";
+        tierSelect.insertBefore(defOpt, tierSelect.firstChild);
+      }
+      if (!persona) tierSelect.value = "default";
+    });
+
+    editorEl.classList.remove("hidden");
+    keyInput.focus();
+  }
+
+  document.getElementById("pe-cancel").addEventListener("click", function () {
+    document.getElementById("persona-editor").classList.add("hidden");
+  });
+
+  document
+    .getElementById("persona-editor-form")
+    .addEventListener("submit", function (e) {
+      e.preventDefault();
+
+      var key = document.getElementById("pe-key").value.trim();
+      var data = {
+        key: key,
+        name: document.getElementById("pe-name").value.trim(),
+        description: document.getElementById("pe-description").value.trim(),
+        preamble: document.getElementById("pe-preamble").value,
+        modelTier: document.getElementById("pe-model-tier").value,
+      };
+
+      var promise = editingPersonaKey
+        ? updatePersona(editingPersonaKey, data)
+        : createPersona(data);
+
+      promise
+        .then(function () {
+          document.getElementById("persona-editor").classList.add("hidden");
+          showPersonaManager();
+          // Refresh cached personas so badge/picker stay current
+          fetchPersonas().then(function () {
+            updateHeaderPersona();
+          });
+        })
+        .catch(function (err) {
+          alert("Error: " + err.message);
+        });
+    });
+
   // --- Event Handlers ---
 
   formEl.addEventListener("submit", function (e) {
@@ -461,6 +805,10 @@
 
   newChatBtn.addEventListener("click", function () {
     createNewChat();
+  });
+
+  personaMgrBtn.addEventListener("click", function () {
+    showPersonaManager();
   });
 
   sidebarToggle.addEventListener("click", function () {
@@ -493,6 +841,11 @@
     activeChatId = sessions[0].id;
     renderSidebar();
   }
+
+  // Pre-fetch personas so header badge and picker are ready
+  fetchPersonas().then(function () {
+    updateHeaderPersona();
+  });
 
   // Single persistent connection — chat routing is per-message
   connectWs();

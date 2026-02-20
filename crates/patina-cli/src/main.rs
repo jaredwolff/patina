@@ -15,6 +15,7 @@ use patina_core::agent::{
 };
 use patina_core::bus::{InboundMessage, MessageBus, OutboundMessage};
 use patina_core::cron::CronService;
+use patina_core::persona::PersonaStore;
 use patina_core::session::SessionManager;
 use patina_core::tools::cron::CronTool;
 use patina_core::tools::filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
@@ -645,6 +646,21 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
     let (mut agent_loop, context_tools, cron_service, mut bus) =
         build_agent_loop(config, workspace)?;
 
+    // Load persona store
+    let persona_store_path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".patina")
+        .join("personas.json");
+    let persona_store = Arc::new(tokio::sync::Mutex::new(PersonaStore::load(
+        &persona_store_path,
+    )));
+    let model_tiers = agent_loop
+        .models
+        .tiers()
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+
     // Start cron service
     {
         let mut cron = cron_service.lock().await;
@@ -723,6 +739,8 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
             config.channels.web.clone(),
             config.gateway.clone(),
             sessions_dir,
+            persona_store.clone(),
+            model_tiers.clone(),
         ) {
             Ok(web) => {
                 channel_manager.register(Arc::new(web)).await;
@@ -984,7 +1002,62 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                     Some(media_snapshot.as_slice())
                 };
 
-                let process_fut = agent_loop.process_message(&session_key, &combined, media_opt);
+                // === Persona resolution ===
+                // If the inbound message carries a persona key (first message of a web chat),
+                // persist it to session metadata so subsequent messages use the same persona.
+                if let Some(persona_val) = last_metadata.get("persona") {
+                    if let Some(persona_key) = persona_val.as_str() {
+                        if !persona_key.is_empty() {
+                            if let Ok(session) =
+                                agent_loop.sessions.get_or_create_checked(&session_key)
+                            {
+                                session
+                                    .metadata
+                                    .insert("persona".to_string(), serde_json::json!(persona_key));
+                                let _ = agent_loop.sessions.save(&session_key);
+                            }
+                        }
+                    }
+                }
+
+                // Read persona from session metadata and resolve overrides
+                let (preamble_override, persona_tier) = {
+                    let persona_key = agent_loop
+                        .sessions
+                        .get_or_create_checked(&session_key)
+                        .ok()
+                        .and_then(|s| s.metadata.get("persona").cloned())
+                        .and_then(|v| v.as_str().map(|s| s.to_string()));
+
+                    if let Some(key) = persona_key {
+                        let store = persona_store.lock().await;
+                        match store.get(&key) {
+                            Some(p) => (
+                                if p.preamble.is_empty() {
+                                    None
+                                } else {
+                                    Some(p.preamble.clone())
+                                },
+                                if p.model_tier.is_empty() {
+                                    None
+                                } else {
+                                    Some(p.model_tier.clone())
+                                },
+                            ),
+                            None => (None, None),
+                        }
+                    } else {
+                        (None, None)
+                    }
+                };
+
+                let process_fut = agent_loop.process_message_with_persona(
+                    &session_key,
+                    &combined,
+                    media_opt,
+                    preamble_override.as_deref(),
+                    persona_tier.as_deref(),
+                );
                 tokio::pin!(process_fut);
 
                 let inner_result = loop {
