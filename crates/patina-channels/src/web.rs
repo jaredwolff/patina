@@ -586,6 +586,32 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                             continue;
                         }
 
+                        // Echo user message to other connected clients
+                        broadcast_to_others(
+                            &state.connections,
+                            &conn_id,
+                            &WsOutMsg {
+                                msg_type: "user_message".to_string(),
+                                content: Some(parsed.content.clone()),
+                                chat_id: Some(chat_id.clone()),
+                                timestamp: Some(chrono::Local::now().to_rfc3339()),
+                                messages: None,
+                            },
+                        );
+
+                        // Notify other clients that agent is processing
+                        broadcast_to_others(
+                            &state.connections,
+                            &conn_id,
+                            &WsOutMsg {
+                                msg_type: "thinking".to_string(),
+                                content: None,
+                                chat_id: Some(chat_id.clone()),
+                                timestamp: None,
+                                messages: None,
+                            },
+                        );
+
                         let sender_id = format!("web:{}", &chat_id[..chat_id.len().min(8)]);
 
                         let mut metadata = HashMap::new();
@@ -610,6 +636,38 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                             break;
                         }
                     }
+                    "create_session" => {
+                        if parsed.chat_id.is_empty() {
+                            continue;
+                        }
+                        broadcast_to_others(
+                            &state.connections,
+                            &conn_id,
+                            &WsOutMsg {
+                                msg_type: "session_created".to_string(),
+                                content: Some(parsed.content.clone()),
+                                chat_id: Some(parsed.chat_id.clone()),
+                                timestamp: Some(chrono::Local::now().to_rfc3339()),
+                                messages: None,
+                            },
+                        );
+                    }
+                    "delete_session" => {
+                        if parsed.chat_id.is_empty() {
+                            continue;
+                        }
+                        broadcast_to_others(
+                            &state.connections,
+                            &conn_id,
+                            &WsOutMsg {
+                                msg_type: "session_deleted".to_string(),
+                                content: None,
+                                chat_id: Some(parsed.chat_id.clone()),
+                                timestamp: None,
+                                messages: None,
+                            },
+                        );
+                    }
                     _ => {}
                 }
             }
@@ -622,6 +680,21 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
     state.connections.remove(&conn_id);
     write_handle.abort();
     info!("WebSocket disconnected: conn={short_conn}");
+}
+
+/// Broadcast a message to all WebSocket connections except the sender.
+fn broadcast_to_others(
+    connections: &DashMap<String, WsSender>,
+    exclude_conn_id: &str,
+    msg: &WsOutMsg,
+) {
+    if let Ok(json) = serde_json::to_string(msg) {
+        for entry in connections.iter() {
+            if entry.key() != exclude_conn_id {
+                let _ = entry.value().send(Message::Text(json.clone().into()));
+            }
+        }
+    }
 }
 
 /// Send session history for a chat over a WS connection.

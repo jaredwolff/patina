@@ -337,6 +337,9 @@
     fetch("/api/sessions/" + encodeURIComponent(id), {
       method: "DELETE",
     }).catch(function () {});
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "delete_session", chatId: id }));
+    }
     sessions = sessions.filter(function (s) {
       return s.id !== id;
     });
@@ -375,6 +378,15 @@
     };
     sessions.unshift(session);
     saveSessions();
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({
+          type: "create_session",
+          chatId: id,
+          content: personaKey || "",
+        }),
+      );
+    }
     switchChat(id);
     closeSidebarMobile();
   }
@@ -497,6 +509,55 @@
           }
           if (data.chatId) {
             updateSessionTime(data.chatId);
+          }
+          break;
+        case "user_message":
+          if (data.chatId === activeChatId) {
+            addMessage("user", data.content);
+          }
+          if (data.chatId) {
+            updateSessionTitle(data.chatId, data.content);
+            updateSessionTime(data.chatId);
+            if (data.chatId !== activeChatId) {
+              unreadChats[data.chatId] = true;
+              renderSidebar();
+            }
+          }
+          break;
+        case "thinking":
+          if (data.chatId === activeChatId) {
+            showThinking();
+          }
+          break;
+        case "session_created":
+          if (data.chatId && !findSession(data.chatId)) {
+            var personaKey = data.content || null;
+            sessions.unshift({
+              id: data.chatId,
+              title: "New Chat",
+              updatedAt: data.timestamp || new Date().toISOString(),
+              persona: personaKey,
+            });
+            saveSessions();
+            renderSidebar();
+          }
+          break;
+        case "session_deleted":
+          if (data.chatId) {
+            sessions = sessions.filter(function (s) {
+              return s.id !== data.chatId;
+            });
+            delete unreadChats[data.chatId];
+            saveSessions();
+            if (data.chatId === activeChatId) {
+              if (sessions.length > 0) {
+                switchChat(sessions[0].id);
+              } else {
+                createNewChat();
+              }
+            } else {
+              renderSidebar();
+            }
           }
           break;
         case "error":
@@ -942,6 +1003,7 @@
   // Pre-fetch personas so header badge and picker are ready
   fetchPersonas().then(function () {
     updateHeaderPersona();
+    renderSidebar();
   });
 
   // Single persistent connection — chat routing is per-message
