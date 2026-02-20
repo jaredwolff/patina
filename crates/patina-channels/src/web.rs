@@ -135,6 +135,7 @@ impl Channel for WebChannel {
             .route("/", get(serve_index))
             .route("/style.css", get(serve_css))
             .route("/app.js", get(serve_js))
+            .route("/marked.min.js", get(serve_marked_js))
             .route("/ws", get(ws_upgrade))
             .route("/api/sessions", get(api_list_sessions))
             .route(
@@ -227,6 +228,10 @@ impl Channel for WebChannel {
         }
         self.config.allow_from.iter().any(|a| a == sender_id)
     }
+
+    fn prompt_rules(&self) -> &str {
+        self.config.system_prompt_rules.as_deref().unwrap_or("")
+    }
 }
 
 // --- Axum Handlers ---
@@ -243,6 +248,13 @@ async fn serve_js() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "application/javascript")],
         web_assets::APP_JS,
+    )
+}
+
+async fn serve_marked_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "application/javascript")],
+        web_assets::MARKED_JS,
     )
 }
 
@@ -806,6 +818,7 @@ mod tests {
                 enabled: true,
                 password: String::new(),
                 allow_from: vec![],
+                system_prompt_rules: None,
             },
             GatewayConfig::default(),
             test_sessions_dir(),
@@ -823,6 +836,7 @@ mod tests {
                 enabled: true,
                 password: String::new(),
                 allow_from: vec!["web:abc12345".to_string()],
+                system_prompt_rules: None,
             },
             GatewayConfig::default(),
             test_sessions_dir(),
@@ -918,6 +932,7 @@ mod tests {
             enabled: true,
             password: String::new(),
             allow_from: vec![],
+            system_prompt_rules: None,
         };
         assert!(config.password.is_empty());
     }

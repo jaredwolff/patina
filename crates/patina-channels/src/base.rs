@@ -24,4 +24,10 @@ pub trait Channel: Send + Sync {
 
     /// Check if a sender is allowed to use this bot.
     fn is_allowed(&self, sender_id: &str) -> bool;
+
+    /// Channel-specific rules to inject into the system prompt.
+    /// Returns empty string if no special rules apply.
+    fn prompt_rules(&self) -> &str {
+        ""
+    }
 }

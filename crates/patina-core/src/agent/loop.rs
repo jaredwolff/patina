@@ -99,6 +99,8 @@ pub struct AgentLoop {
     pub memory_window: usize,
     pub model_overrides: ModelOverrides,
     pub memory_index: Option<Arc<MemoryIndex>>,
+    /// Per-channel system prompt rules (channel name → rules text).
+    pub channel_rules: std::collections::HashMap<String, String>,
 }
 
 #[allow(deprecated)]
@@ -163,10 +165,24 @@ impl AgentLoop {
         let session = self.sessions.get_or_create_checked(session_key)?;
         let history = session.get_history(self.memory_window);
 
+        // Parse session_key ("channel:chat_id") to extract channel info
+        let (channel, chat_id) = session_key
+            .split_once(':')
+            .map(|(ch, cid)| (Some(ch), Some(cid)))
+            .unwrap_or((None, None));
+        let channel_rules = channel
+            .and_then(|ch| self.channel_rules.get(ch))
+            .map(|s| s.as_str());
+
         // Build messages for context
-        let messages_json =
-            self.context
-                .build_messages(&history, user_message, None, None, media)?;
+        let messages_json = self.context.build_messages(
+            &history,
+            user_message,
+            channel,
+            chat_id,
+            media,
+            channel_rules,
+        )?;
 
         // Clear preamble override so subsequent calls use defaults
         self.context.set_preamble_override(None);

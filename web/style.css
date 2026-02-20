@@ -300,6 +300,28 @@ header h1 {
     color: var(--text-secondary);
 }
 
+.message.assistant table {
+    border-collapse: collapse;
+    margin: 8px 0;
+    font-size: 13px;
+    width: 100%;
+}
+
+.message.assistant th,
+.message.assistant td {
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+}
+
+.message.assistant th {
+    background: var(--bg-tertiary);
+    font-weight: 600;
+}
+
+.message.assistant tr:nth-child(even) {
+    background: color-mix(in srgb, var(--bg-tertiary) 40%, transparent);
+}
+
 .thinking {
     display: flex;
     gap: 4px;

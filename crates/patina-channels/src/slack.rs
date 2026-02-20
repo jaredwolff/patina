@@ -340,6 +340,13 @@ impl Channel for SlackChannel {
     fn is_allowed(&self, sender_id: &str) -> bool {
         self.check_allowed(sender_id)
     }
+
+    fn prompt_rules(&self) -> &str {
+        self.config
+            .system_prompt_rules
+            .as_deref()
+            .unwrap_or("No markdown tables. Never use markdown table syntax — Slack does not support table formatting. Use plain text lists instead.")
+    }
 }
 
 /// Parse chat_id into channel ID and optional thread_ts.

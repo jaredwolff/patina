@@ -85,6 +85,8 @@ pub struct TelegramConfig {
     pub webhook_listen: Option<String>,
     /// Local port to bind the webhook listener on (default: 8443).
     pub webhook_port: Option<u16>,
+    /// Optional override for channel-specific system prompt rules.
+    pub system_prompt_rules: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -104,6 +106,8 @@ pub struct SlackConfig {
     /// Bot token (xoxb-*) for Web API calls.
     pub bot_token: String,
     pub allow_from: Vec<String>,
+    /// Optional override for channel-specific system prompt rules.
+    pub system_prompt_rules: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -113,6 +117,8 @@ pub struct WebConfig {
     /// Optional password for access control. If empty, no auth required.
     pub password: String,
     pub allow_from: Vec<String>,
+    /// Optional override for channel-specific system prompt rules.
+    pub system_prompt_rules: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

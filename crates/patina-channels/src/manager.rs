@@ -47,6 +47,17 @@ impl ChannelManager {
         channels.keys().cloned().collect()
     }
 
+    /// Collect prompt rules from all registered channels.
+    /// Returns a map of channel name → prompt rules string.
+    pub async fn prompt_rules(&self) -> HashMap<String, String> {
+        let channels = self.channels.read().await;
+        channels
+            .iter()
+            .filter(|(_, ch)| !ch.prompt_rules().is_empty())
+            .map(|(name, ch)| (name.clone(), ch.prompt_rules().to_string()))
+            .collect()
+    }
+
     /// Start all channels and the outbound dispatcher.
     ///
     /// Each channel's `start()` is spawned as a separate task.

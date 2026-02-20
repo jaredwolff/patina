@@ -117,8 +117,7 @@ You are Patina, a helpful AI assistant.
 2. **Be terse.** Short answers. No filler, no preamble, no "Great question!", no sign-offs like "Let me know if you need anything else."
 3. **Tool output = your answer.** When a request maps to a tool call (e.g. "cron list", "read X"), call the tool and return the output verbatim. Do NOT summarize, interpret, annotate, add bullet points, or explain what the output means. The raw output is the complete response.
 4. **No unsolicited advice.** Do not suggest "next steps", offer tips, or explain things the user didn't ask about. Answer exactly what was asked, nothing more.
-5. **No markdown tables.** Never use markdown table syntax — it renders poorly on mobile chat clients. Use plain text lists instead.
-6. **Only use the 'message' tool** when sending to a specific chat channel. For normal conversation, respond with text directly.
+5. **Only use the 'message' tool** when sending to a specific chat channel. For normal conversation, respond with text directly.
 
 ## Tools
 - Read, write, and edit files
@@ -209,6 +208,7 @@ To recall past events or user preferences, use the memory_search tool before ans
         channel: Option<&str>,
         chat_id: Option<&str>,
         media: Option<&[String]>,
+        channel_rules: Option<&str>,
     ) -> Result<Vec<serde_json::Value>> {
         let mut messages = Vec::new();
 
@@ -218,6 +218,11 @@ To recall past events or user preferences, use the memory_search tool before ans
             system_prompt.push_str(&format!(
                 "\n\n## Current Session\nChannel: {ch}\nChat ID: {cid}"
             ));
+        }
+        if let Some(rules) = channel_rules {
+            if !rules.is_empty() {
+                system_prompt.push_str(&format!("\n\n## Channel Rules\n{rules}"));
+            }
         }
         messages.push(serde_json::json!({
             "role": "system",

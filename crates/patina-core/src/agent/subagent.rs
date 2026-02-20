@@ -225,6 +225,7 @@ impl SubagentManager {
             memory_window: self.config.agents.defaults.memory_window,
             model_overrides: crate::agent::r#loop::ModelOverrides::defaults(),
             memory_index: None,
+            channel_rules: std::collections::HashMap::new(),
         })
     }
 

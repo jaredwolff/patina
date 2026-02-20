@@ -1,6 +1,15 @@
 (function () {
   "use strict";
 
+  // Configure marked: open links in new tabs
+  var renderer = new marked.Renderer();
+  var defaultLinkRenderer = renderer.link.bind(renderer);
+  renderer.link = function (token) {
+    var html = defaultLinkRenderer(token);
+    return html.replace("<a ", '<a target="_blank" rel="noopener" ');
+  };
+  marked.setOptions({ renderer: renderer, gfm: true, breaks: true });
+
   var messagesEl = document.getElementById("messages");
   var inputEl = document.getElementById("input");
   var formEl = document.getElementById("input-form");
@@ -164,70 +173,8 @@
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
-  function escapeHtml(str) {
-    var div = document.createElement("div");
-    div.textContent = str;
-    return div.innerHTML;
-  }
-
   function renderMarkdown(text) {
-    var codeBlocks = [];
-    text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, function (_, lang, code) {
-      var idx = codeBlocks.length;
-      codeBlocks.push(
-        '<pre><code class="lang-' +
-          escapeHtml(lang) +
-          '">' +
-          escapeHtml(code.replace(/\n$/, "")) +
-          "</code></pre>",
-      );
-      return "\x00CB" + idx + "\x00";
-    });
-
-    var inlineCode = [];
-    text = text.replace(/`([^`\n]+)`/g, function (_, code) {
-      var idx = inlineCode.length;
-      inlineCode.push("<code>" + escapeHtml(code) + "</code>");
-      return "\x00IC" + idx + "\x00";
-    });
-
-    text = escapeHtml(text);
-
-    text = text.replace(/\x00CB(\d+)\x00/g, function (_, idx) {
-      return codeBlocks[parseInt(idx)];
-    });
-    text = text.replace(/\x00IC(\d+)\x00/g, function (_, idx) {
-      return inlineCode[parseInt(idx)];
-    });
-
-    text = text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-    text = text.replace(/__(.+?)__/g, "<strong>$1</strong>");
-    text = text.replace(/\*(.+?)\*/g, "<em>$1</em>");
-    text = text.replace(/_(.+?)_/g, "<em>$1</em>");
-    text = text.replace(/~~(.+?)~~/g, "<s>$1</s>");
-    text = text.replace(
-      /\[([^\]]+)\]\(([^)]+)\)/g,
-      '<a href="$2" target="_blank" rel="noopener">$1</a>',
-    );
-    text = text.replace(/^&gt; (.+)$/gm, "<blockquote>$1</blockquote>");
-    text = text.replace(/^[-*] (.+)$/gm, "<li>$1</li>");
-    text = text.replace(/((?:<li>.*<\/li>\n?)+)/g, "<ul>$1</ul>");
-    text = text.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
-    text = text.replace(/^### (.+)$/gm, "<h3>$1</h3>");
-    text = text.replace(/^## (.+)$/gm, "<h2>$1</h2>");
-    text = text.replace(/^# (.+)$/gm, "<h1>$1</h1>");
-
-    var parts = text.split(/\n\n+/);
-    text = parts
-      .map(function (part) {
-        part = part.trim();
-        if (!part) return "";
-        if (/^<(pre|ul|ol|h[1-4]|blockquote)/.test(part)) return part;
-        return "<p>" + part.replace(/\n/g, "<br>") + "</p>";
-      })
-      .join("");
-
-    return text;
+    return marked.parse(text);
   }
 
   function addMessage(role, content) {

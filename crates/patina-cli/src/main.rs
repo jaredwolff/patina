@@ -615,6 +615,7 @@ fn build_agent_loop(
         memory_window: defaults.memory_window,
         model_overrides: ModelOverrides::defaults(),
         memory_index: Some(memory_index),
+        channel_rules: HashMap::new(),
     };
 
     Ok((agent_loop, context_tools, cron_service, bus))
@@ -747,6 +748,20 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                 tracing::error!("Failed to create Web channel: {e}");
             }
         }
+    }
+
+    // Collect per-channel prompt rules and inject into agent loop
+    agent_loop.channel_rules = channel_manager.prompt_rules().await;
+    if !agent_loop.channel_rules.is_empty() {
+        tracing::info!(
+            "Channel rules loaded for: {}",
+            agent_loop
+                .channel_rules
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
 
     // Start all channels (spawns polling + outbound dispatcher)

@@ -334,6 +334,13 @@ impl Channel for TelegramChannel {
     fn is_allowed(&self, sender_id: &str) -> bool {
         self.check_allowed(sender_id)
     }
+
+    fn prompt_rules(&self) -> &str {
+        self.config
+            .system_prompt_rules
+            .as_deref()
+            .unwrap_or("No markdown tables. Never use markdown table syntax — it renders poorly on mobile chat clients. Use plain text lists instead.")
+    }
 }
 
 /// Handle an incoming Telegram message.
