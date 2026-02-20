@@ -601,6 +601,12 @@ header h1 {
 
 /* --- Persona Editor Form --- */
 
+#persona-editor-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
 #persona-editor-form label {
     display: flex;
     flex-direction: column;
@@ -633,6 +639,32 @@ header h1 {
     min-height: 80px;
     font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
     font-size: 13px;
+}
+
+.label-with-action {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.btn-inline {
+    padding: 2px 8px;
+    background: var(--bg-secondary);
+    color: var(--accent);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.btn-inline:hover {
+    background: var(--bg-tertiary);
+}
+
+.btn-inline:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 /* --- Mobile --- */

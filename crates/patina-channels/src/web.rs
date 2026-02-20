@@ -16,8 +16,12 @@ use dashmap::DashMap;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use patina_config::{GatewayConfig, WebConfig};
+use patina_core::agent::ModelPool;
 use patina_core::bus::InboundMessage;
 use patina_core::persona::PersonaStore;
+use rig::completion::{CompletionModel, CompletionRequest, Message as RigMessage};
+use rig::message::{AssistantContent, Text, UserContent};
+use rig::OneOrMany;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{error, info, warn};
@@ -33,7 +37,7 @@ pub struct WebChannel {
     sessions_dir: PathBuf,
     connections: Arc<DashMap<String, WsSender>>,
     persona_store: Arc<tokio::sync::Mutex<PersonaStore>>,
-    model_tiers: Vec<String>,
+    models: ModelPool,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
 }
 
@@ -44,6 +48,7 @@ struct AppState {
     connections: Arc<DashMap<String, WsSender>>,
     inbound_tx: mpsc::Sender<InboundMessage>,
     persona_store: Arc<tokio::sync::Mutex<PersonaStore>>,
+    models: ModelPool,
     model_tiers: Vec<String>,
 }
 
@@ -94,7 +99,7 @@ impl WebChannel {
         gateway_config: GatewayConfig,
         sessions_dir: PathBuf,
         persona_store: Arc<tokio::sync::Mutex<PersonaStore>>,
-        model_tiers: Vec<String>,
+        models: ModelPool,
     ) -> Result<Self> {
         Ok(Self {
             config,
@@ -102,7 +107,7 @@ impl WebChannel {
             sessions_dir,
             connections: Arc::new(DashMap::new()),
             persona_store,
-            model_tiers,
+            models,
             shutdown_tx: Mutex::new(None),
         })
     }
@@ -115,13 +120,15 @@ impl Channel for WebChannel {
     }
 
     async fn start(&self, inbound_tx: mpsc::Sender<InboundMessage>) -> Result<()> {
+        let model_tiers = self.models.tiers().iter().map(|s| s.to_string()).collect();
         let state = AppState {
             config: self.config.clone(),
             sessions_dir: self.sessions_dir.clone(),
             connections: self.connections.clone(),
             inbound_tx,
             persona_store: self.persona_store.clone(),
-            model_tiers: self.model_tiers.clone(),
+            models: self.models.clone(),
+            model_tiers,
         };
 
         let router = Router::new()
@@ -133,6 +140,10 @@ impl Channel for WebChannel {
             .route(
                 "/api/personas",
                 get(api_list_personas).post(api_create_persona),
+            )
+            .route(
+                "/api/personas/generate-prompt",
+                axum::routing::post(api_generate_prompt),
             )
             .route(
                 "/api/personas/{key}",
@@ -364,6 +375,75 @@ async fn api_delete_persona(
 
 async fn api_model_tiers(State(state): State<AppState>) -> impl IntoResponse {
     axum::Json(state.model_tiers.clone())
+}
+
+#[derive(Deserialize)]
+struct GeneratePromptRequest {
+    name: String,
+    #[serde(default)]
+    description: String,
+}
+
+async fn api_generate_prompt(
+    State(state): State<AppState>,
+    axum::Json(req): axum::Json<GeneratePromptRequest>,
+) -> impl IntoResponse {
+    if req.name.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({"error": "name is required"})),
+        );
+    }
+
+    let (model, _model_name) = state.models.default_model();
+
+    let prompt = format!(
+        "Generate a system prompt for an AI assistant persona with the following details:\n\
+         Name: {}\n\
+         Description: {}\n\n\
+         Write a concise, effective system prompt that defines the persona's behavior, \
+         tone, expertise, and boundaries. Return ONLY the system prompt text, nothing else.",
+        req.name,
+        if req.description.is_empty() {
+            "(no description provided)"
+        } else {
+            &req.description
+        }
+    );
+
+    let request = CompletionRequest {
+        preamble: None,
+        chat_history: OneOrMany::one(RigMessage::User {
+            content: OneOrMany::one(UserContent::Text(Text { text: prompt })),
+        }),
+        documents: Vec::new(),
+        tools: Vec::new(),
+        temperature: Some(0.7),
+        max_tokens: Some(1024),
+        tool_choice: None,
+        additional_params: None,
+    };
+
+    match model.completion(request).await {
+        Ok(response) => {
+            let text: String = response
+                .choice
+                .iter()
+                .filter_map(|c| match c {
+                    AssistantContent::Text(t) => Some(t.text.clone()),
+                    _ => None,
+                })
+                .collect();
+            (
+                axum::http::StatusCode::OK,
+                axum::Json(serde_json::json!({"preamble": text.trim()})),
+            )
+        }
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
 }
 
 async fn ws_upgrade(
@@ -700,6 +780,19 @@ mod tests {
         PathBuf::from("/tmp/patina-test-sessions")
     }
 
+    #[allow(deprecated)]
+    fn test_model_pool() -> ModelPool {
+        use rig::client::completion::CompletionModelHandle;
+        use rig::client::{CompletionClient, Nothing};
+        use rig::providers::ollama;
+
+        let client: ollama::Client = ollama::Client::builder().api_key(Nothing).build().unwrap();
+        let handle = CompletionModelHandle::new(Arc::new(client.completion_model("test")));
+        let mut models = HashMap::new();
+        models.insert("default".to_string(), (handle, "test".to_string()));
+        ModelPool::new(models)
+    }
+
     fn test_persona_store() -> Arc<tokio::sync::Mutex<PersonaStore>> {
         Arc::new(tokio::sync::Mutex::new(PersonaStore::load(&PathBuf::from(
             "/tmp/patina-test-personas.json",
@@ -717,7 +810,7 @@ mod tests {
             GatewayConfig::default(),
             test_sessions_dir(),
             test_persona_store(),
-            vec![],
+            test_model_pool(),
         )
         .unwrap();
         assert!(ch.is_allowed("anyone"));
@@ -734,7 +827,7 @@ mod tests {
             GatewayConfig::default(),
             test_sessions_dir(),
             test_persona_store(),
-            vec![],
+            test_model_pool(),
         )
         .unwrap();
         assert!(ch.is_allowed("web:abc12345"));

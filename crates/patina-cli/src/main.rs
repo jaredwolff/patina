@@ -654,13 +654,6 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
     let persona_store = Arc::new(tokio::sync::Mutex::new(PersonaStore::load(
         &persona_store_path,
     )));
-    let model_tiers = agent_loop
-        .models
-        .tiers()
-        .iter()
-        .map(|s| s.to_string())
-        .collect::<Vec<_>>();
-
     // Start cron service
     {
         let mut cron = cron_service.lock().await;
@@ -740,7 +733,7 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
             config.gateway.clone(),
             sessions_dir,
             persona_store.clone(),
-            model_tiers.clone(),
+            agent_loop.models.clone(),
         ) {
             Ok(web) => {
                 channel_manager.register(Arc::new(web)).await;

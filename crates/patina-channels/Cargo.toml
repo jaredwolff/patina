@@ -25,6 +25,7 @@ axum = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true }
 uuid = { workspace = true }
+rig-core = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

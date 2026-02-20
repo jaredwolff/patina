@@ -748,6 +748,42 @@
     document.getElementById("persona-editor").classList.add("hidden");
   });
 
+  document.getElementById("pe-generate").addEventListener("click", function () {
+    var btn = this;
+    var name = document.getElementById("pe-name").value.trim();
+    if (!name) {
+      alert("Enter a persona name first.");
+      return;
+    }
+    var description = document.getElementById("pe-description").value.trim();
+
+    btn.disabled = true;
+    btn.textContent = "Generating...";
+
+    fetch("/api/personas/generate-prompt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name, description: description }),
+    })
+      .then(function (res) {
+        return res.json();
+      })
+      .then(function (data) {
+        if (data.error) {
+          alert("Generation failed: " + data.error);
+        } else if (data.preamble) {
+          document.getElementById("pe-preamble").value = data.preamble;
+        }
+      })
+      .catch(function (err) {
+        alert("Generation failed: " + err.message);
+      })
+      .finally(function () {
+        btn.disabled = false;
+        btn.textContent = "Generate";
+      });
+  });
+
   document
     .getElementById("persona-editor-form")
     .addEventListener("submit", function (e) {
