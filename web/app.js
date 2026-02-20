@@ -412,6 +412,9 @@
       if (sessions.length > 0) {
         switchChat(sessions[0].id);
       } else {
+        activeChatId = null;
+        clearMessages();
+        renderSidebar();
         createNewChat();
       }
     } else {
@@ -615,6 +618,9 @@
               if (sessions.length > 0) {
                 switchChat(sessions[0].id);
               } else {
+                activeChatId = null;
+                clearMessages();
+                renderSidebar();
                 createNewChat();
               }
             } else {
@@ -691,11 +697,17 @@
         return res.json();
       })
       .then(function (serverSessions) {
+        var serverIds = {};
+        serverSessions.forEach(function (s) {
+          serverIds[s.id] = s;
+        });
         var localIds = {};
         sessions.forEach(function (s) {
           localIds[s.id] = true;
         });
-        var added = false;
+        var changed = false;
+
+        // Add server sessions missing locally
         serverSessions.forEach(function (s) {
           if (!localIds[s.id]) {
             sessions.push({
@@ -704,17 +716,37 @@
               updatedAt: s.updatedAt || "",
               persona: s.persona || null,
             });
-            added = true;
+            changed = true;
           } else if (s.persona) {
             // Backfill persona for existing local sessions missing it
             var local = findSession(s.id);
             if (local && !local.persona) {
               local.persona = s.persona;
-              added = true;
+              changed = true;
             }
           }
         });
-        if (added) {
+
+        // Remove local sessions that no longer exist on the server
+        var before = sessions.length;
+        sessions = sessions.filter(function (s) {
+          return serverIds[s.id];
+        });
+        if (sessions.length !== before) {
+          changed = true;
+          // If active chat was removed, switch away
+          if (activeChatId && !serverIds[activeChatId]) {
+            if (sessions.length > 0) {
+              switchChat(sessions[0].id);
+            } else {
+              activeChatId = null;
+              clearMessages();
+              createNewChat();
+            }
+          }
+        }
+
+        if (changed) {
           saveSessions();
           renderSidebar();
         }
@@ -774,6 +806,9 @@
     .getElementById("persona-picker-cancel")
     .addEventListener("click", function () {
       document.getElementById("persona-picker").classList.add("hidden");
+      if (sessions.length === 0) {
+        finishCreateChat(null);
+      }
     });
 
   // --- Persona Manager ---
