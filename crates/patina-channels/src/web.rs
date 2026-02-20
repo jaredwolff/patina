@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::io::BufRead;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -27,6 +29,10 @@ type WsSender = mpsc::UnboundedSender<Message>;
 pub struct WebChannel {
     config: WebConfig,
     gateway_config: GatewayConfig,
+    sessions_dir: PathBuf,
+    /// Keyed by connection ID (UUID). Server is stateless about which chat
+    /// is "active" — the client includes chatId in every message and filters
+    /// inbound responses by chatId.
     connections: Arc<DashMap<String, WsSender>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
 }
@@ -34,6 +40,7 @@ pub struct WebChannel {
 #[derive(Clone)]
 struct AppState {
     config: WebConfig,
+    sessions_dir: PathBuf,
     connections: Arc<DashMap<String, WsSender>>,
     inbound_tx: mpsc::Sender<InboundMessage>,
 }
@@ -41,7 +48,6 @@ struct AppState {
 #[derive(Deserialize)]
 struct WsParams {
     password: Option<String>,
-    session: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -55,6 +61,16 @@ struct WsOutMsg {
     chat_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     timestamp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    messages: Option<Vec<HistoryMessage>>,
+}
+
+#[derive(Serialize, Clone)]
+struct HistoryMessage {
+    role: String,
+    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -63,13 +79,21 @@ struct WsInMsg {
     msg_type: String,
     #[serde(default)]
     content: String,
+    #[serde(default)]
+    #[serde(rename = "chatId")]
+    chat_id: String,
 }
 
 impl WebChannel {
-    pub fn new(config: WebConfig, gateway_config: GatewayConfig) -> Result<Self> {
+    pub fn new(
+        config: WebConfig,
+        gateway_config: GatewayConfig,
+        sessions_dir: PathBuf,
+    ) -> Result<Self> {
         Ok(Self {
             config,
             gateway_config,
+            sessions_dir,
             connections: Arc::new(DashMap::new()),
             shutdown_tx: Mutex::new(None),
         })
@@ -85,6 +109,7 @@ impl Channel for WebChannel {
     async fn start(&self, inbound_tx: mpsc::Sender<InboundMessage>) -> Result<()> {
         let state = AppState {
             config: self.config.clone(),
+            sessions_dir: self.sessions_dir.clone(),
             connections: self.connections.clone(),
             inbound_tx,
         };
@@ -94,6 +119,7 @@ impl Channel for WebChannel {
             .route("/style.css", get(serve_css))
             .route("/app.js", get(serve_js))
             .route("/ws", get(ws_upgrade))
+            .route("/api/sessions", get(api_list_sessions))
             .with_state(state);
 
         let addr: SocketAddr = format!("{}:{}", self.gateway_config.host, self.gateway_config.port)
@@ -132,28 +158,35 @@ impl Channel for WebChannel {
     }
 
     async fn send(&self, msg: &patina_core::bus::OutboundMessage) -> Result<()> {
-        if let Some(sender) = self.connections.get(&msg.chat_id) {
-            let out = WsOutMsg {
-                msg_type: "message".to_string(),
-                content: Some(msg.content.clone()),
-                chat_id: None,
-                timestamp: Some(chrono::Local::now().to_rfc3339()),
-            };
-            let json = serde_json::to_string(&out)?;
-            if sender.send(Message::Text(json.into())).is_err() {
-                warn!(
-                    "WebSocket send failed for chat_id={}, removing connection",
-                    msg.chat_id
-                );
-                drop(sender);
-                self.connections.remove(&msg.chat_id);
-            }
-        } else {
-            // Client disconnected. Session persists in JSONL — they can reconnect.
+        if self.connections.is_empty() {
             warn!(
-                "No active WebSocket for chat_id={}, message saved to session only",
+                "No active WebSocket connections, message for chat_id={} saved to session only",
                 msg.chat_id
             );
+            return Ok(());
+        }
+
+        let out = WsOutMsg {
+            msg_type: "message".to_string(),
+            content: Some(msg.content.clone()),
+            chat_id: Some(msg.chat_id.clone()),
+            timestamp: Some(chrono::Local::now().to_rfc3339()),
+            messages: None,
+        };
+        let json = serde_json::to_string(&out)?;
+
+        // Broadcast to all connections — client filters by chatId
+        for entry in self.connections.iter() {
+            if entry
+                .value()
+                .send(Message::Text(json.clone().into()))
+                .is_err()
+            {
+                warn!(
+                    "WebSocket send failed for conn={}, will clean up on disconnect",
+                    entry.key()
+                );
+            }
         }
         Ok(())
     }
@@ -183,6 +216,11 @@ async fn serve_js() -> impl IntoResponse {
     )
 }
 
+async fn api_list_sessions(State(state): State<AppState>) -> impl IntoResponse {
+    let sessions = list_web_sessions(&state.sessions_dir);
+    axum::Json(sessions)
+}
+
 async fn ws_upgrade(
     ws: WebSocketUpgrade,
     Query(params): Query<WsParams>,
@@ -199,6 +237,7 @@ async fn ws_upgrade(
                         content: Some("Authentication failed".to_string()),
                         chat_id: None,
                         timestamp: None,
+                        messages: None,
                     };
                     let _ = socket
                         .send(Message::Text(serde_json::to_string(&err).unwrap().into()))
@@ -209,35 +248,30 @@ async fn ws_upgrade(
         }
     }
 
-    let chat_id = params
-        .session
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-    ws.on_upgrade(move |socket| handle_ws(socket, chat_id, state))
+    ws.on_upgrade(move |socket| handle_ws(socket, state))
         .into_response()
 }
 
-async fn handle_ws(socket: WebSocket, chat_id: String, state: AppState) {
-    let sender_id = format!("web:{}", &chat_id[..chat_id.len().min(8)]);
-    info!("WebSocket connected: chat_id={chat_id}, sender_id={sender_id}");
+async fn handle_ws(socket: WebSocket, state: AppState) {
+    let conn_id = uuid::Uuid::new_v4().to_string();
+    let short_conn = &conn_id[..8];
+    info!("WebSocket connected: conn={short_conn}");
 
     let (ws_write, mut ws_read) = socket.split();
     let (tx, rx) = mpsc::unbounded_channel::<Message>();
 
-    // Register connection
-    state.connections.insert(chat_id.clone(), tx.clone());
+    state.connections.insert(conn_id.clone(), tx.clone());
 
-    // Spawn write task
-    let write_chat_id = chat_id.clone();
-    let write_handle = tokio::spawn(ws_write_loop(ws_write, rx, write_chat_id));
+    let write_conn_id = conn_id.clone();
+    let write_handle = tokio::spawn(ws_write_loop(ws_write, rx, write_conn_id));
 
-    // Send connected message
+    // Send connected acknowledgment
     let connected = WsOutMsg {
         msg_type: "connected".to_string(),
         content: None,
-        chat_id: Some(chat_id.clone()),
+        chat_id: None,
         timestamp: None,
+        messages: None,
     };
     if let Ok(json) = serde_json::to_string(&connected) {
         let _ = tx.send(Message::Text(json.into()));
@@ -248,7 +282,7 @@ async fn handle_ws(socket: WebSocket, chat_id: String, state: AppState) {
         let msg = match result {
             Ok(m) => m,
             Err(e) => {
-                warn!("WebSocket read error for {chat_id}: {e}");
+                warn!("WebSocket read error for conn={short_conn}: {e}");
                 break;
             }
         };
@@ -260,49 +294,258 @@ async fn handle_ws(socket: WebSocket, chat_id: String, state: AppState) {
                     Err(_) => continue,
                 };
 
-                if parsed.msg_type == "message" && !parsed.content.trim().is_empty() {
-                    let inbound = InboundMessage {
-                        channel: "web".to_string(),
-                        sender_id: sender_id.clone(),
-                        chat_id: chat_id.clone(),
-                        content: parsed.content,
-                        media: Vec::new(),
-                        metadata: HashMap::new(),
-                        timestamp: chrono::Local::now().to_rfc3339(),
-                    };
-                    if let Err(e) = state.inbound_tx.send(inbound).await {
-                        error!("Failed to send inbound message: {e}");
-                        break;
+                match parsed.msg_type.as_str() {
+                    "get_history" => {
+                        if parsed.chat_id.is_empty() {
+                            continue;
+                        }
+                        send_history(&state.sessions_dir, &parsed.chat_id, &tx);
                     }
+                    "message" => {
+                        let chat_id = parsed.chat_id;
+                        if chat_id.is_empty() || parsed.content.trim().is_empty() {
+                            continue;
+                        }
+
+                        let sender_id = format!("web:{}", &chat_id[..chat_id.len().min(8)]);
+
+                        let inbound = InboundMessage {
+                            channel: "web".to_string(),
+                            sender_id,
+                            chat_id,
+                            content: parsed.content,
+                            media: Vec::new(),
+                            metadata: HashMap::new(),
+                            timestamp: chrono::Local::now().to_rfc3339(),
+                        };
+                        if let Err(e) = state.inbound_tx.send(inbound).await {
+                            error!("Failed to send inbound message: {e}");
+                            break;
+                        }
+                    }
+                    _ => {}
                 }
             }
             Message::Close(_) => break,
-            _ => {} // Ignore ping/pong/binary
+            _ => {}
         }
     }
 
     // Cleanup
-    state.connections.remove(&chat_id);
+    state.connections.remove(&conn_id);
     write_handle.abort();
-    info!("WebSocket disconnected: chat_id={chat_id}");
+    info!("WebSocket disconnected: conn={short_conn}");
+}
+
+/// Send session history for a chat over a WS connection.
+fn send_history(
+    sessions_dir: &std::path::Path,
+    chat_id: &str,
+    tx: &mpsc::UnboundedSender<Message>,
+) {
+    let history = load_session_history(sessions_dir, chat_id);
+    if !history.is_empty() {
+        let history_msg = WsOutMsg {
+            msg_type: "history".to_string(),
+            content: None,
+            chat_id: Some(chat_id.to_string()),
+            timestamp: None,
+            messages: Some(history),
+        };
+        if let Ok(json) = serde_json::to_string(&history_msg) {
+            let _ = tx.send(Message::Text(json.into()));
+        }
+    }
 }
 
 async fn ws_write_loop(
     mut ws_write: SplitSink<WebSocket, Message>,
     mut rx: mpsc::UnboundedReceiver<Message>,
-    chat_id: String,
+    conn_id: String,
 ) {
     while let Some(msg) = rx.recv().await {
         if let Err(e) = ws_write.send(msg).await {
-            warn!("WebSocket write error for {chat_id}: {e}");
+            warn!("WebSocket write error for conn={conn_id}: {e}");
             break;
         }
     }
 }
 
+// --- Session History ---
+
+const MAX_HISTORY_MESSAGES: usize = 100;
+
+/// Load message history from a session's JSONL file.
+/// Returns user/assistant messages only, capped at MAX_HISTORY_MESSAGES.
+fn load_session_history(sessions_dir: &std::path::Path, chat_id: &str) -> Vec<HistoryMessage> {
+    // Mirror SessionManager::session_path: replace ':' with '_'
+    let session_key = format!("web:{chat_id}");
+    let safe_key = session_key.replace(':', "_");
+    let path = sessions_dir.join(format!("{safe_key}.jsonl"));
+
+    let file = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+
+    let reader = std::io::BufReader::new(file);
+    let mut messages = Vec::new();
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let value: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Skip metadata lines
+        if value.get("_type").is_some() {
+            continue;
+        }
+
+        let role = match value.get("role").and_then(|r| r.as_str()) {
+            Some(r) if r == "user" || r == "assistant" => r.to_string(),
+            _ => continue,
+        };
+
+        let content = match value.get("content").and_then(|c| c.as_str()) {
+            Some(c) if !c.is_empty() => c.to_string(),
+            _ => continue,
+        };
+
+        let timestamp = value
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .map(|t| t.to_string());
+
+        messages.push(HistoryMessage {
+            role,
+            content,
+            timestamp,
+        });
+    }
+
+    // Return only the last N messages
+    if messages.len() > MAX_HISTORY_MESSAGES {
+        messages.split_off(messages.len() - MAX_HISTORY_MESSAGES)
+    } else {
+        messages
+    }
+}
+
+/// Session info returned by the sessions listing API.
+#[derive(Serialize)]
+struct SessionInfo {
+    id: String,
+    title: String,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+}
+
+/// List web channel sessions from the sessions directory.
+fn list_web_sessions(sessions_dir: &std::path::Path) -> Vec<SessionInfo> {
+    let entries = match std::fs::read_dir(sessions_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut sessions = Vec::new();
+
+    for entry in entries.flatten() {
+        let filename = entry.file_name().to_string_lossy().to_string();
+        if !filename.starts_with("web_") || !filename.ends_with(".jsonl") {
+            continue;
+        }
+
+        // Extract chat_id: "web_{uuid}.jsonl" -> "{uuid}"
+        let chat_id = filename
+            .strip_prefix("web_")
+            .and_then(|s| s.strip_suffix(".jsonl"))
+            .unwrap_or("")
+            .to_string();
+        if chat_id.is_empty() {
+            continue;
+        }
+
+        let file = match std::fs::File::open(entry.path()) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        let reader = std::io::BufReader::new(file);
+
+        let mut updated_at = String::new();
+        let mut title = String::new();
+
+        for line in reader.lines().flatten() {
+            let line = line.trim().to_string();
+            if line.is_empty() {
+                continue;
+            }
+            let value: serde_json::Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            // Read metadata for updated_at
+            if value.get("_type").and_then(|t| t.as_str()) == Some("metadata") {
+                if let Some(ts) = value.get("updated_at").and_then(|t| t.as_str()) {
+                    updated_at = ts.to_string();
+                }
+                continue;
+            }
+
+            // Find first user message for title
+            if title.is_empty() {
+                if value.get("role").and_then(|r| r.as_str()) == Some("user") {
+                    if let Some(content) = value.get("content").and_then(|c| c.as_str()) {
+                        title = content.chars().take(50).collect();
+                        if content.len() > 50 {
+                            title.push_str("...");
+                        }
+                    }
+                }
+            }
+
+            // Once we have both, stop reading
+            if !updated_at.is_empty() && !title.is_empty() {
+                break;
+            }
+        }
+
+        if title.is_empty() {
+            title = "New Chat".to_string();
+        }
+
+        sessions.push(SessionInfo {
+            id: chat_id,
+            title,
+            updated_at,
+        });
+    }
+
+    // Sort by updated_at descending
+    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sessions
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    fn test_sessions_dir() -> PathBuf {
+        PathBuf::from("/tmp/patina-test-sessions")
+    }
 
     #[test]
     fn test_is_allowed_empty_allows_all() {
@@ -313,6 +556,7 @@ mod tests {
                 allow_from: vec![],
             },
             GatewayConfig::default(),
+            test_sessions_dir(),
         )
         .unwrap();
         assert!(ch.is_allowed("anyone"));
@@ -327,6 +571,7 @@ mod tests {
                 allow_from: vec!["web:abc12345".to_string()],
             },
             GatewayConfig::default(),
+            test_sessions_dir(),
         )
         .unwrap();
         assert!(ch.is_allowed("web:abc12345"));
@@ -340,12 +585,41 @@ mod tests {
             content: None,
             chat_id: Some("abc-123".to_string()),
             timestamp: None,
+            messages: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"connected\""));
         assert!(json.contains("\"chatId\":\"abc-123\""));
         assert!(!json.contains("content"));
         assert!(!json.contains("timestamp"));
+        assert!(!json.contains("messages"));
+    }
+
+    #[test]
+    fn test_ws_out_msg_with_history() {
+        let msg = WsOutMsg {
+            msg_type: "history".to_string(),
+            content: None,
+            chat_id: None,
+            timestamp: None,
+            messages: Some(vec![
+                HistoryMessage {
+                    role: "user".to_string(),
+                    content: "hello".to_string(),
+                    timestamp: Some("2026-01-01T00:00:00".to_string()),
+                },
+                HistoryMessage {
+                    role: "assistant".to_string(),
+                    content: "hi there".to_string(),
+                    timestamp: None,
+                },
+            ]),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"history\""));
+        assert!(json.contains("\"messages\""));
+        assert!(json.contains("\"hello\""));
+        assert!(json.contains("\"hi there\""));
     }
 
     #[test]
@@ -354,6 +628,24 @@ mod tests {
         let msg: WsInMsg = serde_json::from_str(json).unwrap();
         assert_eq!(msg.msg_type, "message");
         assert_eq!(msg.content, "hello");
+        assert_eq!(msg.chat_id, "");
+    }
+
+    #[test]
+    fn test_ws_in_msg_with_chat_id() {
+        let json = r#"{"type":"message","content":"hello","chatId":"abc-123"}"#;
+        let msg: WsInMsg = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.msg_type, "message");
+        assert_eq!(msg.content, "hello");
+        assert_eq!(msg.chat_id, "abc-123");
+    }
+
+    #[test]
+    fn test_ws_in_msg_get_history() {
+        let json = r#"{"type":"get_history","chatId":"abc-123"}"#;
+        let msg: WsInMsg = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.msg_type, "get_history");
+        assert_eq!(msg.chat_id, "abc-123");
     }
 
     #[test]
@@ -371,7 +663,87 @@ mod tests {
             password: String::new(),
             allow_from: vec![],
         };
-        // Empty password means no auth required
         assert!(config.password.is_empty());
+    }
+
+    #[test]
+    fn test_load_session_history_missing_file() {
+        let dir = TempDir::new().unwrap();
+        let history = load_session_history(dir.path(), "nonexistent-uuid");
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn test_load_session_history_parses_jsonl() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("web_test-uuid.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, r#"{{"_type":"metadata","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"role":"user","content":"hello","timestamp":"2026-01-01T00:00:01Z"}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"role":"assistant","content":"hi there","timestamp":"2026-01-01T00:00:02Z"}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"role":"system","content":"system msg","timestamp":"2026-01-01T00:00:03Z"}}"#
+        )
+        .unwrap();
+        drop(f);
+
+        let history = load_session_history(dir.path(), "test-uuid");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].role, "user");
+        assert_eq!(history[0].content, "hello");
+        assert_eq!(history[1].role, "assistant");
+        assert_eq!(history[1].content, "hi there");
+    }
+
+    #[test]
+    fn test_load_session_history_caps_at_max() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("web_big-uuid.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, r#"{{"_type":"metadata"}}"#).unwrap();
+        for i in 0..150 {
+            writeln!(f, r#"{{"role":"user","content":"msg {i}"}}"#).unwrap();
+        }
+        drop(f);
+
+        let history = load_session_history(dir.path(), "big-uuid");
+        assert_eq!(history.len(), MAX_HISTORY_MESSAGES);
+        // Should be the last 100
+        assert!(history[0].content.contains("50"));
+    }
+
+    #[test]
+    fn test_list_web_sessions() {
+        let dir = TempDir::new().unwrap();
+
+        // Create a web session file
+        let path = dir.path().join("web_abc-123.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"{{"_type":"metadata","updated_at":"2026-01-01T12:00:00Z"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"role":"user","content":"What is Rust?"}}"#).unwrap();
+        drop(f);
+
+        // Create a non-web session file (should be ignored)
+        let other = dir.path().join("telegram_999.jsonl");
+        std::fs::write(&other, r#"{"_type":"metadata"}"#).unwrap();
+
+        let sessions = list_web_sessions(dir.path());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "abc-123");
+        assert_eq!(sessions[0].title, "What is Rust?");
+        assert_eq!(sessions[0].updated_at, "2026-01-01T12:00:00Z");
     }
 }

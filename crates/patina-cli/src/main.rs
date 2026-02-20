@@ -715,7 +715,15 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
 
     // Register Web channel if enabled
     if config.channels.web.enabled {
-        match WebChannel::new(config.channels.web.clone(), config.gateway.clone()) {
+        let sessions_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".patina")
+            .join("sessions");
+        match WebChannel::new(
+            config.channels.web.clone(),
+            config.gateway.clone(),
+            sessions_dir,
+        ) {
             Ok(web) => {
                 channel_manager.register(Arc::new(web)).await;
                 tracing::info!(
