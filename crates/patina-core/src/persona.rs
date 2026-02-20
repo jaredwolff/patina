@@ -14,6 +14,8 @@ pub struct Persona {
     pub preamble: String,
     #[serde(default)]
     pub model_tier: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub color: String,
 }
 
 /// Manages personas stored in a standalone JSON file.
@@ -110,6 +112,7 @@ mod tests {
                     description: "Helps with code".into(),
                     preamble: "You are a coding assistant.".into(),
                     model_tier: "coding".into(),
+                    color: String::new(),
                 },
             )
             .unwrap();
@@ -137,6 +140,7 @@ mod tests {
                     description: String::new(),
                     preamble: String::new(),
                     model_tier: String::new(),
+                    color: String::new(),
                 },
             )
             .unwrap();
@@ -165,6 +169,7 @@ mod tests {
                     description: String::new(),
                     preamble: String::new(),
                     model_tier: String::new(),
+                    color: String::new(),
                 },
             )
             .unwrap();
@@ -176,6 +181,7 @@ mod tests {
                     description: String::new(),
                     preamble: String::new(),
                     model_tier: String::new(),
+                    color: String::new(),
                 },
             )
             .unwrap();

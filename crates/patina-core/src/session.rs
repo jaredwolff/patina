@@ -273,6 +273,19 @@ impl SessionManager {
         self.sessions.remove(key);
     }
 
+    /// Delete a session from cache and disk. Returns true if the file existed.
+    pub fn delete(&mut self, key: &str) -> Result<bool> {
+        self.sessions.remove(key);
+        let path = self.session_path(key);
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("failed to delete session file '{}'", path.display()))?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     /// List all sessions by reading metadata lines from JSONL files.
     pub fn list_sessions(&self) -> Vec<SessionInfo> {
         let mut sessions = Vec::new();

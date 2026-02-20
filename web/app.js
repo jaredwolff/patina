@@ -161,6 +161,28 @@
     return personaKey;
   }
 
+  function getPersonaForSession(id) {
+    var personaKey = getSessionPersona(id);
+    if (!personaKey || !cachedPersonas) return null;
+    for (var i = 0; i < cachedPersonas.length; i++) {
+      if (cachedPersonas[i].key === personaKey) return cachedPersonas[i];
+    }
+    return null;
+  }
+
+  var PRESET_COLORS = [
+    "#e74c3c",
+    "#e67e22",
+    "#f1c40f",
+    "#2ecc71",
+    "#1abc9c",
+    "#3498db",
+    "#9b59b6",
+    "#e91e63",
+    "#795548",
+    "#607d8b",
+  ];
+
   // --- UI ---
 
   function setStatus(state, text) {
@@ -221,6 +243,20 @@
         "session-item" + (s.id === activeChatId ? " active" : "");
       item.setAttribute("data-id", s.id);
 
+      // Avatar
+      var persona = getPersonaForSession(s.id);
+      var avatar = document.createElement("div");
+      avatar.className = "session-avatar";
+      avatar.style.background =
+        persona && persona.color ? persona.color : "#888";
+      avatar.textContent =
+        persona && persona.name ? persona.name.charAt(0) : "P";
+      item.appendChild(avatar);
+
+      // Content wrapper
+      var contentDiv = document.createElement("div");
+      contentDiv.className = "session-item-content";
+
       var titleDiv = document.createElement("div");
       titleDiv.className = "session-title";
       if (unreadChats[s.id]) {
@@ -231,14 +267,31 @@
       var titleText = document.createElement("span");
       titleText.textContent = s.title || "New Chat";
       titleDiv.appendChild(titleText);
-      item.appendChild(titleDiv);
+      contentDiv.appendChild(titleDiv);
 
       if (s.updatedAt) {
         var timeDiv = document.createElement("div");
         timeDiv.className = "session-time";
         timeDiv.textContent = formatTime(s.updatedAt);
-        item.appendChild(timeDiv);
+        contentDiv.appendChild(timeDiv);
       }
+
+      item.appendChild(contentDiv);
+
+      // Delete button
+      var delBtn = document.createElement("button");
+      delBtn.className = "session-delete";
+      delBtn.textContent = "\u00d7";
+      delBtn.title = "Delete chat";
+      (function (id) {
+        delBtn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          if (confirm("Delete this chat?")) {
+            deleteChat(id);
+          }
+        });
+      })(s.id);
+      item.appendChild(delBtn);
 
       (function (id) {
         item.addEventListener("click", function () {
@@ -279,6 +332,27 @@
   }
 
   // --- Chat Management ---
+
+  function deleteChat(id) {
+    fetch("/api/sessions/" + encodeURIComponent(id), {
+      method: "DELETE",
+    }).catch(function () {});
+    sessions = sessions.filter(function (s) {
+      return s.id !== id;
+    });
+    delete unreadChats[id];
+    saveSessions();
+
+    if (id === activeChatId) {
+      if (sessions.length > 0) {
+        switchChat(sessions[0].id);
+      } else {
+        createNewChat();
+      }
+    } else {
+      renderSidebar();
+    }
+  }
 
   function createNewChat() {
     // If personas exist, show picker first
@@ -326,11 +400,21 @@
     var existing = headerH1.querySelector(".persona-badge");
     if (existing) existing.remove();
 
-    var personaKey = getSessionPersona(activeChatId);
-    if (personaKey) {
+    var persona = getPersonaForSession(activeChatId);
+    if (persona) {
       var badge = document.createElement("span");
       badge.className = "persona-badge";
-      badge.textContent = getPersonaName(personaKey) || personaKey;
+
+      var miniAvatar = document.createElement("span");
+      miniAvatar.className = "header-avatar";
+      miniAvatar.style.background = persona.color || "#888";
+      miniAvatar.textContent = persona.name ? persona.name.charAt(0) : "P";
+      badge.appendChild(miniAvatar);
+
+      var nameSpan = document.createElement("span");
+      nameSpan.textContent = persona.name || persona.key;
+      badge.appendChild(nameSpan);
+
       headerH1.appendChild(badge);
     }
   }
@@ -495,8 +579,16 @@
               id: s.id,
               title: s.title || "Chat",
               updatedAt: s.updatedAt || "",
+              persona: s.persona || null,
             });
             added = true;
+          } else if (s.persona) {
+            // Backfill persona for existing local sessions missing it
+            var local = findSession(s.id);
+            if (local && !local.persona) {
+              local.persona = s.persona;
+              added = true;
+            }
           }
         });
         if (added) {
@@ -687,6 +779,27 @@
       if (!persona) tierSelect.value = "default";
     });
 
+    // Populate color swatches
+    var colorInput = document.getElementById("pe-color");
+    var swatchesEl = document.getElementById("pe-color-swatches");
+    var selectedColor = persona && persona.color ? persona.color : "";
+    colorInput.value = selectedColor;
+    swatchesEl.innerHTML = "";
+    PRESET_COLORS.forEach(function (c) {
+      var swatch = document.createElement("div");
+      swatch.className =
+        "color-swatch" + (c === selectedColor ? " selected" : "");
+      swatch.style.background = c;
+      swatch.addEventListener("click", function () {
+        colorInput.value = c;
+        swatchesEl.querySelectorAll(".color-swatch").forEach(function (s) {
+          s.classList.remove("selected");
+        });
+        swatch.classList.add("selected");
+      });
+      swatchesEl.appendChild(swatch);
+    });
+
     editorEl.classList.remove("hidden");
     keyInput.focus();
   }
@@ -743,6 +856,7 @@
         description: document.getElementById("pe-description").value.trim(),
         preamble: document.getElementById("pe-preamble").value,
         modelTier: document.getElementById("pe-model-tier").value,
+        color: document.getElementById("pe-color").value,
       };
 
       var promise = editingPersonaKey

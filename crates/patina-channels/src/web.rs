@@ -139,6 +139,10 @@ impl Channel for WebChannel {
             .route("/ws", get(ws_upgrade))
             .route("/api/sessions", get(api_list_sessions))
             .route(
+                "/api/sessions/{id}",
+                axum::routing::delete(api_delete_session),
+            )
+            .route(
                 "/api/personas",
                 get(api_list_personas).post(api_create_persona),
             )
@@ -263,6 +267,37 @@ async fn api_list_sessions(State(state): State<AppState>) -> impl IntoResponse {
     axum::Json(sessions)
 }
 
+async fn api_delete_session(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> impl IntoResponse {
+    // Reject path traversal
+    if id.contains('/') || id.contains('\\') || id.contains("..") {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({"error": "invalid session id"})),
+        );
+    }
+    let filename = format!("web_{id}.jsonl");
+    let path = state.sessions_dir.join(&filename);
+    if !path.exists() {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "session not found"})),
+        );
+    }
+    match std::fs::remove_file(&path) {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            axum::Json(serde_json::json!({"deleted": true})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
 // --- Persona API ---
 
 #[derive(Serialize)]
@@ -273,6 +308,8 @@ struct PersonaResponse {
     description: String,
     preamble: String,
     model_tier: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    color: String,
 }
 
 #[derive(Deserialize)]
@@ -287,6 +324,8 @@ struct PersonaRequest {
     preamble: String,
     #[serde(default)]
     model_tier: String,
+    #[serde(default)]
+    color: String,
 }
 
 async fn api_list_personas(State(state): State<AppState>) -> impl IntoResponse {
@@ -300,6 +339,7 @@ async fn api_list_personas(State(state): State<AppState>) -> impl IntoResponse {
             description: p.description.clone(),
             preamble: p.preamble.clone(),
             model_tier: p.model_tier.clone(),
+            color: p.color.clone(),
         })
         .collect();
     axum::Json(personas)
@@ -321,6 +361,7 @@ async fn api_create_persona(
         description: req.description,
         preamble: req.preamble,
         model_tier: req.model_tier,
+        color: req.color,
     };
     match store.upsert(req.key.clone(), persona) {
         Ok(()) => (
@@ -351,6 +392,7 @@ async fn api_update_persona(
         description: req.description,
         preamble: req.preamble,
         model_tier: req.model_tier,
+        color: req.color,
     };
     match store.upsert(key.clone(), persona) {
         Ok(()) => (
@@ -693,6 +735,8 @@ struct SessionInfo {
     title: String,
     #[serde(rename = "updatedAt")]
     updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    persona: Option<String>,
 }
 
 /// List web channel sessions from the sessions directory.
@@ -728,6 +772,7 @@ fn list_web_sessions(sessions_dir: &std::path::Path) -> Vec<SessionInfo> {
 
         let mut updated_at = String::new();
         let mut title = String::new();
+        let mut persona = None;
 
         for line in reader.lines().flatten() {
             let line = line.trim().to_string();
@@ -739,10 +784,19 @@ fn list_web_sessions(sessions_dir: &std::path::Path) -> Vec<SessionInfo> {
                 Err(_) => continue,
             };
 
-            // Read metadata for updated_at
+            // Read metadata for updated_at and persona
             if value.get("_type").and_then(|t| t.as_str()) == Some("metadata") {
                 if let Some(ts) = value.get("updated_at").and_then(|t| t.as_str()) {
                     updated_at = ts.to_string();
+                }
+                if let Some(p) = value
+                    .get("metadata")
+                    .and_then(|m| m.get("persona"))
+                    .and_then(|p| p.as_str())
+                {
+                    if !p.is_empty() {
+                        persona = Some(p.to_string());
+                    }
                 }
                 continue;
             }
@@ -773,6 +827,7 @@ fn list_web_sessions(sessions_dir: &std::path::Path) -> Vec<SessionInfo> {
             id: chat_id,
             title,
             updated_at,
+            persona,
         });
     }
 
