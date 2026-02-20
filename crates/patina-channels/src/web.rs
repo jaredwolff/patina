@@ -15,6 +15,7 @@ use axum::Router;
 use dashmap::DashMap;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
+use patina_config::schema::ModelPricing;
 use patina_config::{GatewayConfig, WebConfig};
 use patina_core::agent::ModelPool;
 use patina_core::bus::InboundMessage;
@@ -40,6 +41,7 @@ pub struct WebChannel {
     persona_store: Arc<tokio::sync::Mutex<PersonaStore>>,
     models: ModelPool,
     usage_tracker: Option<Arc<UsageTracker>>,
+    pricing: HashMap<String, ModelPricing>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
 }
 
@@ -53,6 +55,7 @@ struct AppState {
     models: ModelPool,
     model_tiers: Vec<String>,
     usage_tracker: Option<Arc<UsageTracker>>,
+    pricing: HashMap<String, ModelPricing>,
 }
 
 #[derive(Deserialize)]
@@ -104,6 +107,7 @@ impl WebChannel {
         persona_store: Arc<tokio::sync::Mutex<PersonaStore>>,
         models: ModelPool,
         usage_tracker: Option<Arc<UsageTracker>>,
+        pricing: HashMap<String, ModelPricing>,
     ) -> Result<Self> {
         Ok(Self {
             config,
@@ -113,6 +117,7 @@ impl WebChannel {
             persona_store,
             models,
             usage_tracker,
+            pricing,
             shutdown_tx: Mutex::new(None),
         })
     }
@@ -135,6 +140,7 @@ impl Channel for WebChannel {
             models: self.models.clone(),
             model_tiers,
             usage_tracker: self.usage_tracker.clone(),
+            pricing: self.pricing.clone(),
         };
 
         let router = Router::new()
@@ -478,7 +484,7 @@ async fn api_usage_summary(
             return axum::Json(serde_json::json!([]));
         }
     };
-    match tracker.query_summary(&params.to_filter()) {
+    match tracker.query_summary_with_cost(&params.to_filter(), &state.pricing) {
         Ok(rows) => axum::Json(serde_json::to_value(rows).unwrap_or_default()),
         Err(e) => axum::Json(serde_json::json!({"error": e.to_string()})),
     }
@@ -494,7 +500,7 @@ async fn api_usage_daily(
             return axum::Json(serde_json::json!([]));
         }
     };
-    match tracker.query_daily(&params.to_filter()) {
+    match tracker.query_daily_with_cost(&params.to_filter(), &state.pricing) {
         Ok(rows) => axum::Json(serde_json::to_value(rows).unwrap_or_default()),
         Err(e) => axum::Json(serde_json::json!({"error": e.to_string()})),
     }
@@ -1043,6 +1049,7 @@ mod tests {
             test_persona_store(),
             test_model_pool(),
             None,
+            HashMap::new(),
         )
         .unwrap();
         assert!(ch.is_allowed("anyone"));
@@ -1062,6 +1069,7 @@ mod tests {
             test_persona_store(),
             test_model_pool(),
             None,
+            HashMap::new(),
         )
         .unwrap();
         assert!(ch.is_allowed("web:abc12345"));

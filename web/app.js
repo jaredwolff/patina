@@ -1133,6 +1133,12 @@
     return String(n);
   }
 
+  function formatCost(n) {
+    if (n === null || n === undefined) return "\u2014";
+    if (n < 0.01) return "<$0.01";
+    return "$" + n.toFixed(2);
+  }
+
   function loadUsageFilters() {
     fetch("/api/usage/filters")
       .then(function (r) {
@@ -1228,12 +1234,22 @@
       })
       .then(function (rows) {
         var total = 0;
+        var totalCost = 0;
+        var hasCost = false;
         if (Array.isArray(rows)) {
           rows.forEach(function (r) {
             total += r.total_tokens || 0;
+            if (r.estimated_cost != null) {
+              totalCost += r.estimated_cost;
+              hasCost = true;
+            }
           });
         }
-        document.getElementById(elementId).textContent = formatTokens(total);
+        var text = formatTokens(total);
+        if (hasCost && totalCost > 0) {
+          text += " (" + formatCost(totalCost) + ")";
+        }
+        document.getElementById(elementId).textContent = text;
       })
       .catch(function () {
         document.getElementById(elementId).textContent = "-";
@@ -1246,7 +1262,7 @@
     if (!rows || rows.length === 0) {
       var tr = document.createElement("tr");
       var td = document.createElement("td");
-      td.colSpan = 6;
+      td.colSpan = 7;
       td.textContent = "No data";
       td.style.textAlign = "center";
       td.style.color = "var(--text-secondary)";
@@ -1263,11 +1279,14 @@
         "output_tokens",
         "total_tokens",
         "cached_input_tokens",
+        "estimated_cost",
       ];
       fields.forEach(function (f) {
         var td = document.createElement("td");
         if (f === firstCol) {
           td.textContent = row[f] || "-";
+        } else if (f === "estimated_cost") {
+          td.textContent = formatCost(row[f]);
         } else {
           td.textContent = formatTokens(row[f]);
         }

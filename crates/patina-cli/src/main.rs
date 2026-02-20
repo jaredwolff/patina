@@ -752,6 +752,7 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
             persona_store.clone(),
             agent_loop.models.clone(),
             agent_loop.usage_tracker.clone(),
+            config.agents.pricing.clone(),
         ) {
             Ok(web) => {
                 channel_manager.register(Arc::new(web)).await;

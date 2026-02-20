@@ -21,6 +21,8 @@ pub struct AgentsConfig {
     /// Named model tiers. Must contain at least a "default" entry.
     /// Example tiers: "default", "coding", "consolidation".
     pub models: HashMap<String, ModelRef>,
+    /// Per-model pricing in $/1M tokens, keyed by model name.
+    pub pricing: HashMap<String, ModelPricing>,
 }
 
 /// Reference to a provider + model combination for a named tier.
@@ -29,6 +31,16 @@ pub struct AgentsConfig {
 pub struct ModelRef {
     pub provider: String,
     pub model: String,
+}
+
+/// Per-model pricing in dollars per 1M tokens.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPricing {
+    pub input: f64,
+    pub output: f64,
+    #[serde(default)]
+    pub cached_input: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

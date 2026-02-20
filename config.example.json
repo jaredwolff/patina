@@ -16,6 +16,18 @@
         "provider": "ollama",
         "model": "llama3"
       }
+    },
+    "pricing": {
+      "claude-haiku-4-5-20251001": {
+        "input": 1.0,
+        "output": 5.0,
+        "cachedInput": 0.1
+      },
+      "claude-sonnet-4-5-20250929": {
+        "input": 3.0,
+        "output": 15.0,
+        "cachedInput": 0.3
+      }
     }
   },
   "channels": {

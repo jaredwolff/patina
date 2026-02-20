@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::Result;
+use patina_config::schema::ModelPricing;
 use rusqlite::Connection;
 use serde::Serialize;
 
@@ -40,6 +42,8 @@ pub struct UsageSummary {
     pub output_tokens: u64,
     pub total_tokens: u64,
     pub cached_input_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_cost: Option<f64>,
 }
 
 /// Per-day usage breakdown.
@@ -51,6 +55,8 @@ pub struct DailyUsage {
     pub output_tokens: u64,
     pub total_tokens: u64,
     pub cached_input_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_cost: Option<f64>,
 }
 
 /// Tracks LLM API usage in a SQLite database.
@@ -170,6 +176,7 @@ impl UsageTracker {
                     output_tokens: row.get::<_, i64>(3)? as u64,
                     total_tokens: row.get::<_, i64>(4)? as u64,
                     cached_input_tokens: row.get::<_, i64>(5)? as u64,
+                    estimated_cost: None,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -207,12 +214,187 @@ impl UsageTracker {
                     output_tokens: row.get::<_, i64>(3)? as u64,
                     total_tokens: row.get::<_, i64>(4)? as u64,
                     cached_input_tokens: row.get::<_, i64>(5)? as u64,
+                    estimated_cost: None,
                 })
             })?
             .filter_map(|r| r.ok())
             .collect();
 
         Ok(rows)
+    }
+
+    /// Query aggregated usage with estimated costs applied from pricing config.
+    ///
+    /// When `group_by` is "model", cost is calculated directly per row.
+    /// For other groupings, a secondary per-model query is run to calculate
+    /// accurate costs, then results are re-aggregated.
+    pub fn query_summary_with_cost(
+        &self,
+        filter: &UsageFilter,
+        pricing: &HashMap<String, ModelPricing>,
+    ) -> Result<Vec<UsageSummary>> {
+        if pricing.is_empty() {
+            // No pricing configured — return plain results with None costs
+            return self.query_summary(filter);
+        }
+
+        let group_by = filter.group_by.as_deref().unwrap_or("model");
+
+        if group_by == "model" {
+            // Direct: each row is already per-model, apply pricing inline
+            let mut rows = self.query_summary(filter)?;
+            for row in &mut rows {
+                row.estimated_cost = pricing.get(&row.group_key).map(|p| {
+                    calculate_cost(
+                        row.input_tokens,
+                        row.output_tokens,
+                        row.cached_input_tokens,
+                        p,
+                    )
+                });
+            }
+            return Ok(rows);
+        }
+
+        // For non-model groupings, we need per-model token counts to apply
+        // pricing accurately. Query per-(group_key, model) from SQL, apply
+        // pricing in Rust, then re-aggregate by group_key.
+        let conn = self.lock_conn()?;
+
+        let group_col = match group_by {
+            "provider" => "provider",
+            "agent" => "agent",
+            "session" => "session_key",
+            "call_type" => "call_type",
+            "day" => "date(timestamp)",
+            _ => "model",
+        };
+
+        let (where_clause, params) = build_where_clause(filter);
+
+        let sql = format!(
+            "SELECT {group_col} AS group_key, model,
+                    COUNT(*) AS calls,
+                    SUM(input_tokens) AS input_tokens,
+                    SUM(output_tokens) AS output_tokens,
+                    SUM(total_tokens) AS total_tokens,
+                    SUM(cached_input_tokens) AS cached_input_tokens
+             FROM usage
+             {where_clause}
+             GROUP BY group_key, model
+             ORDER BY total_tokens DESC"
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let detail_rows: Vec<(String, String, u64, u64, u64, u64, u64)> = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)? as u64,
+                    row.get::<_, i64>(3)? as u64,
+                    row.get::<_, i64>(4)? as u64,
+                    row.get::<_, i64>(5)? as u64,
+                    row.get::<_, i64>(6)? as u64,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Re-aggregate by group_key, summing costs across models
+        let mut agg: HashMap<String, UsageSummary> = HashMap::new();
+        for (gk, model, calls, inp, out, total, cached) in detail_rows {
+            let entry = agg.entry(gk.clone()).or_insert_with(|| UsageSummary {
+                group_key: gk,
+                calls: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                cached_input_tokens: 0,
+                estimated_cost: Some(0.0),
+            });
+            entry.calls += calls;
+            entry.input_tokens += inp;
+            entry.output_tokens += out;
+            entry.total_tokens += total;
+            entry.cached_input_tokens += cached;
+            if let Some(p) = pricing.get(&model) {
+                *entry.estimated_cost.as_mut().unwrap() += calculate_cost(inp, out, cached, p);
+            }
+        }
+
+        let mut results: Vec<UsageSummary> = agg.into_values().collect();
+        results.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
+        Ok(results)
+    }
+
+    /// Query per-day usage with estimated costs.
+    pub fn query_daily_with_cost(
+        &self,
+        filter: &UsageFilter,
+        pricing: &HashMap<String, ModelPricing>,
+    ) -> Result<Vec<DailyUsage>> {
+        if pricing.is_empty() {
+            return self.query_daily(filter);
+        }
+
+        let conn = self.lock_conn()?;
+        let (where_clause, params) = build_where_clause(filter);
+
+        // Query per-(day, model) so we can apply per-model pricing
+        let sql = format!(
+            "SELECT date(timestamp) AS day, model,
+                    COUNT(*) AS calls,
+                    SUM(input_tokens) AS input_tokens,
+                    SUM(output_tokens) AS output_tokens,
+                    SUM(total_tokens) AS total_tokens,
+                    SUM(cached_input_tokens) AS cached_input_tokens
+             FROM usage
+             {where_clause}
+             GROUP BY day, model
+             ORDER BY day DESC"
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let detail_rows: Vec<(String, String, u64, u64, u64, u64, u64)> = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)? as u64,
+                    row.get::<_, i64>(3)? as u64,
+                    row.get::<_, i64>(4)? as u64,
+                    row.get::<_, i64>(5)? as u64,
+                    row.get::<_, i64>(6)? as u64,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut agg: HashMap<String, DailyUsage> = HashMap::new();
+        for (day, model, calls, inp, out, total, cached) in detail_rows {
+            let entry = agg.entry(day.clone()).or_insert_with(|| DailyUsage {
+                date: day,
+                calls: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                cached_input_tokens: 0,
+                estimated_cost: Some(0.0),
+            });
+            entry.calls += calls;
+            entry.input_tokens += inp;
+            entry.output_tokens += out;
+            entry.total_tokens += total;
+            entry.cached_input_tokens += cached;
+            if let Some(p) = pricing.get(&model) {
+                *entry.estimated_cost.as_mut().unwrap() += calculate_cost(inp, out, cached, p);
+            }
+        }
+
+        let mut results: Vec<DailyUsage> = agg.into_values().collect();
+        results.sort_by(|a, b| b.date.cmp(&a.date));
+        Ok(results)
     }
 
     /// Get distinct values for a column (for populating filter dropdowns).
@@ -272,6 +454,24 @@ fn build_where_clause(filter: &UsageFilter) -> (String, Vec<String>) {
     };
 
     (clause, params)
+}
+
+/// Calculate the estimated cost for a set of token counts given a pricing config.
+pub fn calculate_cost(
+    input_tokens: u64,
+    output_tokens: u64,
+    cached_input_tokens: u64,
+    pricing: &ModelPricing,
+) -> f64 {
+    let input_cost = (input_tokens as f64 / 1_000_000.0) * pricing.input;
+    let output_cost = (output_tokens as f64 / 1_000_000.0) * pricing.output;
+    let cached_rate = if pricing.cached_input > 0.0 {
+        pricing.cached_input
+    } else {
+        pricing.input
+    };
+    let cached_cost = (cached_input_tokens as f64 / 1_000_000.0) * cached_rate;
+    input_cost + output_cost + cached_cost
 }
 
 #[cfg(test)]
@@ -469,5 +669,165 @@ mod tests {
         let tracker = tracker_in_memory();
         let result = tracker.distinct_values("nonexistent").unwrap();
         assert!(result.is_empty());
+    }
+
+    fn test_pricing() -> HashMap<String, ModelPricing> {
+        let mut pricing = HashMap::new();
+        pricing.insert(
+            "gpt-4".to_string(),
+            ModelPricing {
+                input: 30.0,  // $30/1M input
+                output: 60.0, // $60/1M output
+                cached_input: 15.0,
+            },
+        );
+        pricing.insert(
+            "claude-3".to_string(),
+            ModelPricing {
+                input: 3.0,
+                output: 15.0,
+                cached_input: 0.0, // falls back to input rate
+            },
+        );
+        pricing
+    }
+
+    #[test]
+    fn test_calculate_cost() {
+        let pricing = ModelPricing {
+            input: 3.0,
+            output: 15.0,
+            cached_input: 0.30,
+        };
+        // 1M input = $3, 500K output = $7.50, 200K cached = $0.06
+        let cost = calculate_cost(1_000_000, 500_000, 200_000, &pricing);
+        assert!((cost - 10.56).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_calculate_cost_cached_fallback_to_input() {
+        let pricing = ModelPricing {
+            input: 3.0,
+            output: 15.0,
+            cached_input: 0.0, // should use input rate
+        };
+        // 1M input = $3, 0 output, 1M cached at input rate = $3
+        let cost = calculate_cost(1_000_000, 0, 1_000_000, &pricing);
+        assert!((cost - 6.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_summary_with_cost_by_model() {
+        let tracker = tracker_in_memory();
+        tracker.record(&sample_record("gpt-4", "openai", "default", 1000));
+        tracker.record(&sample_record("claude-3", "anthropic", "default", 2000));
+
+        let pricing = test_pricing();
+        let results = tracker
+            .query_summary_with_cost(
+                &UsageFilter {
+                    group_by: Some("model".to_string()),
+                    ..Default::default()
+                },
+                &pricing,
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        // Both should have estimated_cost set
+        for row in &results {
+            assert!(row.estimated_cost.is_some());
+        }
+    }
+
+    #[test]
+    fn test_summary_with_cost_by_agent() {
+        let tracker = tracker_in_memory();
+        tracker.record(&sample_record("gpt-4", "openai", "default", 1000));
+        tracker.record(&sample_record("claude-3", "anthropic", "default", 2000));
+        tracker.record(&sample_record("gpt-4", "openai", "coder", 500));
+
+        let pricing = test_pricing();
+        let results = tracker
+            .query_summary_with_cost(
+                &UsageFilter {
+                    group_by: Some("agent".to_string()),
+                    ..Default::default()
+                },
+                &pricing,
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        // "default" agent uses both gpt-4 and claude-3, costs should be summed
+        let default_row = results.iter().find(|r| r.group_key == "default").unwrap();
+        assert!(default_row.estimated_cost.unwrap() > 0.0);
+        assert_eq!(default_row.calls, 2);
+    }
+
+    #[test]
+    fn test_summary_with_cost_empty_pricing() {
+        let tracker = tracker_in_memory();
+        tracker.record(&sample_record("gpt-4", "openai", "default", 1000));
+
+        let empty: HashMap<String, ModelPricing> = HashMap::new();
+        let results = tracker
+            .query_summary_with_cost(
+                &UsageFilter {
+                    group_by: Some("model".to_string()),
+                    ..Default::default()
+                },
+                &empty,
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].estimated_cost.is_none());
+    }
+
+    #[test]
+    fn test_summary_with_cost_unpriced_model() {
+        let tracker = tracker_in_memory();
+        tracker.record(&sample_record("llama-3", "ollama", "default", 1000));
+
+        let pricing = test_pricing(); // doesn't include llama-3
+        let results = tracker
+            .query_summary_with_cost(
+                &UsageFilter {
+                    group_by: Some("model".to_string()),
+                    ..Default::default()
+                },
+                &pricing,
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].estimated_cost.is_none()); // no pricing for this model
+    }
+
+    #[test]
+    fn test_daily_with_cost() {
+        let tracker = tracker_in_memory();
+
+        let mut rec1 = sample_record("gpt-4", "openai", "default", 1000);
+        rec1.timestamp = "2026-02-19T10:00:00Z".to_string();
+        tracker.record(&rec1);
+
+        let mut rec2 = sample_record("claude-3", "anthropic", "default", 2000);
+        rec2.timestamp = "2026-02-20T10:00:00Z".to_string();
+        tracker.record(&rec2);
+
+        let pricing = test_pricing();
+        let results = tracker
+            .query_daily_with_cost(&UsageFilter::default(), &pricing)
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        // Both days should have costs
+        assert!(results[0].estimated_cost.unwrap() > 0.0);
+        assert!(results[1].estimated_cost.unwrap() > 0.0);
+        // Ordered by date DESC
+        assert_eq!(results[0].date, "2026-02-20");
+        assert_eq!(results[1].date, "2026-02-19");
     }
 }
