@@ -16,6 +16,7 @@ use crate::tools::filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFil
 use crate::tools::shell::ExecTool;
 use crate::tools::web::{WebFetchTool, WebSearchTool};
 use crate::tools::ToolRegistry;
+use crate::usage::UsageTracker;
 
 /// Info about a running subagent.
 struct SubagentInfo {
@@ -30,6 +31,7 @@ pub struct SubagentManager {
     workspace: PathBuf,
     inbound_tx: mpsc::Sender<InboundMessage>,
     config: patina_config::Config,
+    usage_tracker: Option<Arc<UsageTracker>>,
 }
 
 impl SubagentManager {
@@ -45,7 +47,13 @@ impl SubagentManager {
             workspace,
             inbound_tx,
             config,
+            usage_tracker: None,
         }
+    }
+
+    /// Set the usage tracker for subagent LLM calls.
+    pub fn set_usage_tracker(&mut self, tracker: Arc<UsageTracker>) {
+        self.usage_tracker = Some(tracker);
     }
 
     /// Spawn a background agent task.
@@ -226,6 +234,7 @@ impl SubagentManager {
             model_overrides: crate::agent::r#loop::ModelOverrides::defaults(),
             memory_index: None,
             channel_rules: std::collections::HashMap::new(),
+            usage_tracker: self.usage_tracker.clone(),
         })
     }
 

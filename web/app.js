@@ -20,7 +20,12 @@
   var sidebarToggle = document.getElementById("sidebar-toggle");
   var appEl = document.getElementById("app");
   var personaMgrBtn = document.getElementById("persona-mgr-btn");
-  var headerH1 = document.querySelector("header h1");
+  var pageMenuBtn = document.getElementById("page-menu-btn");
+  var pageMenu = document.getElementById("page-menu");
+  var sidebarTitle = document.getElementById("sidebar-title");
+  var chatAreaEl = document.getElementById("chat-area");
+  var usageViewEl = document.getElementById("usage-view");
+  var headerH1 = document.querySelector("#chat-area header h1");
 
   var ws = null;
   var reconnectDelay = 1000;
@@ -330,6 +335,63 @@
     var overlay = document.querySelector(".sidebar-overlay");
     if (overlay) overlay.remove();
   }
+
+  // --- Page Navigation ---
+
+  var currentPage = "chats";
+
+  function navigateTo(page) {
+    currentPage = page;
+    closePageMenu();
+
+    if (page === "chats") {
+      chatAreaEl.classList.remove("hidden");
+      usageViewEl.classList.add("hidden");
+      sidebarTitle.textContent = "Chats";
+      sessionListEl.style.display = "";
+      newChatBtn.style.display = "";
+    } else if (page === "usage") {
+      chatAreaEl.classList.add("hidden");
+      usageViewEl.classList.remove("hidden");
+      sidebarTitle.textContent = "Usage";
+      sessionListEl.style.display = "none";
+      newChatBtn.style.display = "none";
+      loadUsageFilters();
+      refreshUsage();
+    }
+
+    // Update active state on dropdown items
+    pageMenu.querySelectorAll("[data-page]").forEach(function (item) {
+      item.classList.toggle("active", item.getAttribute("data-page") === page);
+    });
+
+    closeSidebarMobile();
+  }
+
+  function closePageMenu() {
+    pageMenu.classList.add("hidden");
+  }
+
+  pageMenuBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    pageMenu.classList.toggle("hidden");
+  });
+
+  document.addEventListener("click", function (e) {
+    if (
+      !pageMenu.classList.contains("hidden") &&
+      !pageMenu.contains(e.target) &&
+      e.target !== pageMenuBtn
+    ) {
+      closePageMenu();
+    }
+  });
+
+  pageMenu.querySelectorAll("[data-page]").forEach(function (item) {
+    item.addEventListener("click", function () {
+      navigateTo(item.getAttribute("data-page"));
+    });
+  });
 
   // --- Chat Management ---
 
@@ -969,20 +1031,35 @@
     showPersonaManager();
   });
 
+  function openSidebarMobile() {
+    appEl.classList.remove("sidebar-hidden");
+    var overlay = document.createElement("div");
+    overlay.className = "sidebar-overlay";
+    overlay.addEventListener("click", function () {
+      closeSidebarMobile();
+    });
+    document.body.appendChild(overlay);
+  }
+
   sidebarToggle.addEventListener("click", function () {
     if (appEl.classList.contains("sidebar-hidden")) {
-      appEl.classList.remove("sidebar-hidden");
-      var overlay = document.createElement("div");
-      overlay.className = "sidebar-overlay";
-      overlay.addEventListener("click", function () {
-        closeSidebarMobile();
-      });
-      document.body.appendChild(overlay);
+      openSidebarMobile();
     } else {
       appEl.classList.add("sidebar-hidden");
       removeOverlay();
     }
   });
+
+  document
+    .getElementById("usage-sidebar-toggle")
+    .addEventListener("click", function () {
+      if (appEl.classList.contains("sidebar-hidden")) {
+        openSidebarMobile();
+      } else {
+        appEl.classList.add("sidebar-hidden");
+        removeOverlay();
+      }
+    });
 
   // --- Init ---
 
@@ -1008,4 +1085,252 @@
 
   // Single persistent connection — chat routing is per-message
   connectWs();
+
+  // --- Usage Dashboard ---
+
+  var usageRefresh = document.getElementById("usage-refresh");
+  var usageSortState = {
+    table: "usage-table",
+    key: "total_tokens",
+    asc: false,
+  };
+
+  usageRefresh.addEventListener("click", function () {
+    refreshUsage();
+  });
+
+  function getUsageParams() {
+    var params = {};
+    var from = document.getElementById("usage-from").value;
+    var to = document.getElementById("usage-to").value;
+    var model = document.getElementById("usage-model").value;
+    var provider = document.getElementById("usage-provider").value;
+    var agent = document.getElementById("usage-agent").value;
+    var groupBy = document.getElementById("usage-group").value;
+    if (from) params.from = from + "T00:00:00Z";
+    if (to) params.to = to + "T23:59:59Z";
+    if (model) params.model = model;
+    if (provider) params.provider = provider;
+    if (agent) params.agent = agent;
+    if (groupBy) params.groupBy = groupBy;
+    return params;
+  }
+
+  function buildQuery(params) {
+    var parts = [];
+    for (var k in params) {
+      if (params.hasOwnProperty(k)) {
+        parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(params[k]));
+      }
+    }
+    return parts.length ? "?" + parts.join("&") : "";
+  }
+
+  function formatTokens(n) {
+    if (n === undefined || n === null) return "0";
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+    if (n >= 1000) return (n / 1000).toFixed(1) + "K";
+    return String(n);
+  }
+
+  function loadUsageFilters() {
+    fetch("/api/usage/filters")
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (data) {
+        populateSelect("usage-model", data.models || []);
+        populateSelect("usage-provider", data.providers || []);
+        populateSelect("usage-agent", data.agents || []);
+      })
+      .catch(function () {});
+  }
+
+  function populateSelect(id, values) {
+    var sel = document.getElementById(id);
+    var current = sel.value;
+    // Keep "All" option
+    sel.innerHTML = '<option value="">All</option>';
+    values.forEach(function (v) {
+      var opt = document.createElement("option");
+      opt.value = v;
+      opt.textContent = v;
+      sel.appendChild(opt);
+    });
+    sel.value = current;
+  }
+
+  function refreshUsage() {
+    var params = getUsageParams();
+    var qs = buildQuery(params);
+
+    // Fetch summary cards (totals for today/week/month/all)
+    fetchSummaryCards();
+
+    // Fetch grouped summary
+    fetch("/api/usage/summary" + qs)
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (rows) {
+        if (rows && !rows.error) {
+          renderUsageTable("usage-table", rows, "group_key");
+        }
+      })
+      .catch(function () {});
+
+    // Fetch daily breakdown
+    var dailyParams = Object.assign({}, params);
+    delete dailyParams.groupBy;
+    var dailyQs = buildQuery(dailyParams);
+    fetch("/api/usage/daily" + dailyQs)
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (rows) {
+        if (rows && !rows.error) {
+          renderUsageTable("usage-daily-table", rows, "date");
+        }
+      })
+      .catch(function () {});
+  }
+
+  function fetchSummaryCards() {
+    var now = new Date();
+    var todayStr = now.toISOString().slice(0, 10);
+
+    // Today
+    var dayStart = todayStr + "T00:00:00Z";
+    var dayEnd = todayStr + "T23:59:59Z";
+    fetchTotalTokens({ from: dayStart, to: dayEnd }, "usage-today");
+
+    // This week (Monday start)
+    var weekDay = now.getDay();
+    var mondayOffset = weekDay === 0 ? 6 : weekDay - 1;
+    var monday = new Date(now);
+    monday.setDate(now.getDate() - mondayOffset);
+    var weekStart = monday.toISOString().slice(0, 10) + "T00:00:00Z";
+    fetchTotalTokens({ from: weekStart, to: dayEnd }, "usage-week");
+
+    // This month
+    var monthStart = todayStr.slice(0, 7) + "-01T00:00:00Z";
+    fetchTotalTokens({ from: monthStart, to: dayEnd }, "usage-month");
+
+    // All time
+    fetchTotalTokens({}, "usage-alltime");
+  }
+
+  function fetchTotalTokens(params, elementId) {
+    var qs = buildQuery(params);
+    fetch("/api/usage/daily" + qs)
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (rows) {
+        var total = 0;
+        if (Array.isArray(rows)) {
+          rows.forEach(function (r) {
+            total += r.total_tokens || 0;
+          });
+        }
+        document.getElementById(elementId).textContent = formatTokens(total);
+      })
+      .catch(function () {
+        document.getElementById(elementId).textContent = "-";
+      });
+  }
+
+  function renderUsageTable(tableId, rows, firstCol) {
+    var tbody = document.querySelector("#" + tableId + " tbody");
+    tbody.innerHTML = "";
+    if (!rows || rows.length === 0) {
+      var tr = document.createElement("tr");
+      var td = document.createElement("td");
+      td.colSpan = 6;
+      td.textContent = "No data";
+      td.style.textAlign = "center";
+      td.style.color = "var(--text-secondary)";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    rows.forEach(function (row) {
+      var tr = document.createElement("tr");
+      var fields = [
+        firstCol,
+        "calls",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cached_input_tokens",
+      ];
+      fields.forEach(function (f) {
+        var td = document.createElement("td");
+        if (f === firstCol) {
+          td.textContent = row[f] || "-";
+        } else {
+          td.textContent = formatTokens(row[f]);
+        }
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  // Sortable table headers
+  document
+    .querySelectorAll(
+      "#usage-table th[data-sort], #usage-daily-table th[data-sort]",
+    )
+    .forEach(function (th) {
+      th.style.cursor = "pointer";
+      th.addEventListener("click", function () {
+        var tableId = th.closest("table").id;
+        var key = th.getAttribute("data-sort");
+        var tbody = th.closest("table").querySelector("tbody");
+        var rows = Array.prototype.slice.call(tbody.querySelectorAll("tr"));
+
+        // Toggle direction
+        var asc =
+          usageSortState.table === tableId && usageSortState.key === key
+            ? !usageSortState.asc
+            : false;
+        usageSortState = { table: tableId, key: key, asc: asc };
+
+        // Update header indicators
+        th.closest("thead")
+          .querySelectorAll("th")
+          .forEach(function (h) {
+            h.classList.remove("sort-asc", "sort-desc");
+          });
+        th.classList.add(asc ? "sort-asc" : "sort-desc");
+
+        rows.sort(function (a, b) {
+          var colIdx = Array.prototype.indexOf.call(th.parentNode.children, th);
+          var aVal = a.children[colIdx] ? a.children[colIdx].textContent : "";
+          var bVal = b.children[colIdx] ? b.children[colIdx].textContent : "";
+          // Try numeric comparison
+          var aNum = parseFloat(aVal.replace(/[KM,]/g, ""));
+          var bNum = parseFloat(bVal.replace(/[KM,]/g, ""));
+          if (!isNaN(aNum) && !isNaN(bNum)) {
+            // Restore actual values for proper comparison
+            aNum = parseTokenValue(aVal);
+            bNum = parseTokenValue(bVal);
+            return asc ? aNum - bNum : bNum - aNum;
+          }
+          return asc ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+        });
+
+        rows.forEach(function (row) {
+          tbody.appendChild(row);
+        });
+      });
+    });
+
+  function parseTokenValue(str) {
+    str = str.trim();
+    if (str.endsWith("M")) return parseFloat(str) * 1000000;
+    if (str.endsWith("K")) return parseFloat(str) * 1000;
+    return parseFloat(str) || 0;
+  }
 })();

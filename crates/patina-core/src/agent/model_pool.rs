@@ -10,14 +10,14 @@ use rig::client::completion::CompletionModelHandle;
 #[allow(deprecated)]
 #[derive(Clone)]
 pub struct ModelPool {
-    /// (model_handle, model_name_for_logging)
-    models: HashMap<String, (CompletionModelHandle<'static>, String)>,
+    /// (model_handle, model_name, provider_name)
+    models: HashMap<String, (CompletionModelHandle<'static>, String, String)>,
 }
 
 #[allow(deprecated)]
 impl ModelPool {
     /// Create a new ModelPool. Panics if no "default" tier is present.
-    pub fn new(models: HashMap<String, (CompletionModelHandle<'static>, String)>) -> Self {
+    pub fn new(models: HashMap<String, (CompletionModelHandle<'static>, String, String)>) -> Self {
         assert!(
             models.contains_key("default"),
             "ModelPool must contain a \"default\" tier"
@@ -26,17 +26,18 @@ impl ModelPool {
     }
 
     /// Get a specific tier. Falls back to "default" if the tier is not found.
-    pub fn get(&self, tier: &str) -> (&CompletionModelHandle<'static>, &str) {
-        let (handle, name) = self
+    /// Returns (handle, model_name, provider_name).
+    pub fn get(&self, tier: &str) -> (&CompletionModelHandle<'static>, &str, &str) {
+        let (handle, name, provider) = self
             .models
             .get(tier)
             .or_else(|| self.models.get("default"))
             .expect("default tier must exist");
-        (handle, name)
+        (handle, name, provider)
     }
 
     /// Get the default tier.
-    pub fn default_model(&self) -> (&CompletionModelHandle<'static>, &str) {
+    pub fn default_model(&self) -> (&CompletionModelHandle<'static>, &str, &str) {
         self.get("default")
     }
 

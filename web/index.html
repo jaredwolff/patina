@@ -10,7 +10,23 @@
         <div id="app">
             <aside id="sidebar">
                 <div id="sidebar-header">
-                    <h2>Chats</h2>
+                    <div id="sidebar-title-wrap">
+                        <button id="page-menu-btn" title="Switch page">
+                            <h2 id="sidebar-title">Chats</h2>
+                            <span class="chevron">&#9662;</span>
+                        </button>
+                        <div id="page-menu" class="dropdown hidden">
+                            <button
+                                class="dropdown-item active"
+                                data-page="chats"
+                            >
+                                Chats
+                            </button>
+                            <button class="dropdown-item" data-page="usage">
+                                Usage
+                            </button>
+                        </div>
+                    </div>
                     <div id="sidebar-actions">
                         <button id="persona-mgr-btn" title="Manage Personas">
                             &#9881;
@@ -41,7 +57,126 @@
                     <button type="submit" id="send-btn" disabled>Send</button>
                 </form>
             </main>
+            <!-- Usage Dashboard (shown when page=usage) -->
+            <div id="usage-view" class="page-view hidden">
+                <header>
+                    <button
+                        id="usage-sidebar-toggle"
+                        class="sidebar-toggle-btn"
+                        title="Toggle sidebar"
+                    >
+                        &#9776;
+                    </button>
+                    <h1>Usage</h1>
+                </header>
+                <div id="usage-content">
+                    <div id="usage-controls">
+                        <div class="usage-filters">
+                            <label
+                                >From <input type="date" id="usage-from"
+                            /></label>
+                            <label
+                                >To <input type="date" id="usage-to"
+                            /></label>
+                            <label
+                                >Model
+                                <select id="usage-model">
+                                    <option value="">All</option>
+                                </select>
+                            </label>
+                            <label
+                                >Provider
+                                <select id="usage-provider">
+                                    <option value="">All</option>
+                                </select>
+                            </label>
+                            <label
+                                >Agent
+                                <select id="usage-agent">
+                                    <option value="">All</option>
+                                </select>
+                            </label>
+                            <label
+                                >Group by
+                                <select id="usage-group">
+                                    <option value="model">Model</option>
+                                    <option value="provider">Provider</option>
+                                    <option value="agent">Agent</option>
+                                    <option value="session">Session</option>
+                                    <option value="call_type">Call Type</option>
+                                </select>
+                            </label>
+                            <button id="usage-refresh" class="btn-primary">
+                                Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <div id="usage-summary-cards">
+                        <div class="usage-card">
+                            <div class="usage-card-label">Today</div>
+                            <div class="usage-card-value" id="usage-today">
+                                -
+                            </div>
+                        </div>
+                        <div class="usage-card">
+                            <div class="usage-card-label">This Week</div>
+                            <div class="usage-card-value" id="usage-week">
+                                -
+                            </div>
+                        </div>
+                        <div class="usage-card">
+                            <div class="usage-card-label">This Month</div>
+                            <div class="usage-card-value" id="usage-month">
+                                -
+                            </div>
+                        </div>
+                        <div class="usage-card">
+                            <div class="usage-card-label">All Time</div>
+                            <div class="usage-card-value" id="usage-alltime">
+                                -
+                            </div>
+                        </div>
+                    </div>
+                    <h3>Summary</h3>
+                    <div id="usage-table-wrap">
+                        <table id="usage-table">
+                            <thead>
+                                <tr>
+                                    <th data-sort="group_key">Group</th>
+                                    <th data-sort="calls">Calls</th>
+                                    <th data-sort="input_tokens">Input</th>
+                                    <th data-sort="output_tokens">Output</th>
+                                    <th data-sort="total_tokens">Total</th>
+                                    <th data-sort="cached_input_tokens">
+                                        Cached
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                    <h3>Daily Breakdown</h3>
+                    <div id="usage-daily-wrap">
+                        <table id="usage-daily-table">
+                            <thead>
+                                <tr>
+                                    <th data-sort="date">Date</th>
+                                    <th data-sort="calls">Calls</th>
+                                    <th data-sort="input_tokens">Input</th>
+                                    <th data-sort="output_tokens">Output</th>
+                                    <th data-sort="total_tokens">Total</th>
+                                    <th data-sort="cached_input_tokens">
+                                        Cached
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         </div>
+
         <!-- Persona picker modal (shown on new chat when personas exist) -->
         <div id="persona-picker" class="modal hidden">
             <div class="modal-content">

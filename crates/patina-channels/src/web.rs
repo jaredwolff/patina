@@ -19,6 +19,7 @@ use patina_config::{GatewayConfig, WebConfig};
 use patina_core::agent::ModelPool;
 use patina_core::bus::InboundMessage;
 use patina_core::persona::PersonaStore;
+use patina_core::usage::{UsageFilter, UsageTracker};
 use rig::completion::{CompletionModel, CompletionRequest, Message as RigMessage};
 use rig::message::{AssistantContent, Text, UserContent};
 use rig::OneOrMany;
@@ -38,6 +39,7 @@ pub struct WebChannel {
     connections: Arc<DashMap<String, WsSender>>,
     persona_store: Arc<tokio::sync::Mutex<PersonaStore>>,
     models: ModelPool,
+    usage_tracker: Option<Arc<UsageTracker>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
 }
 
@@ -50,6 +52,7 @@ struct AppState {
     persona_store: Arc<tokio::sync::Mutex<PersonaStore>>,
     models: ModelPool,
     model_tiers: Vec<String>,
+    usage_tracker: Option<Arc<UsageTracker>>,
 }
 
 #[derive(Deserialize)]
@@ -100,6 +103,7 @@ impl WebChannel {
         sessions_dir: PathBuf,
         persona_store: Arc<tokio::sync::Mutex<PersonaStore>>,
         models: ModelPool,
+        usage_tracker: Option<Arc<UsageTracker>>,
     ) -> Result<Self> {
         Ok(Self {
             config,
@@ -108,6 +112,7 @@ impl WebChannel {
             connections: Arc::new(DashMap::new()),
             persona_store,
             models,
+            usage_tracker,
             shutdown_tx: Mutex::new(None),
         })
     }
@@ -129,6 +134,7 @@ impl Channel for WebChannel {
             persona_store: self.persona_store.clone(),
             models: self.models.clone(),
             model_tiers,
+            usage_tracker: self.usage_tracker.clone(),
         };
 
         let router = Router::new()
@@ -155,6 +161,9 @@ impl Channel for WebChannel {
                 put(api_update_persona).delete(api_delete_persona),
             )
             .route("/api/model-tiers", get(api_model_tiers))
+            .route("/api/usage/summary", get(api_usage_summary))
+            .route("/api/usage/daily", get(api_usage_daily))
+            .route("/api/usage/filters", get(api_usage_filters))
             .with_state(state);
 
         let addr: SocketAddr = format!("{}:{}", self.gateway_config.host, self.gateway_config.port)
@@ -431,6 +440,84 @@ async fn api_model_tiers(State(state): State<AppState>) -> impl IntoResponse {
     axum::Json(state.model_tiers.clone())
 }
 
+// --- Usage API ---
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageQueryParams {
+    from: Option<String>,
+    to: Option<String>,
+    model: Option<String>,
+    provider: Option<String>,
+    agent: Option<String>,
+    session: Option<String>,
+    group_by: Option<String>,
+}
+
+impl UsageQueryParams {
+    fn to_filter(&self) -> UsageFilter {
+        UsageFilter {
+            from: self.from.clone(),
+            to: self.to.clone(),
+            model: self.model.clone(),
+            provider: self.provider.clone(),
+            agent: self.agent.clone(),
+            session: self.session.clone(),
+            group_by: self.group_by.clone(),
+        }
+    }
+}
+
+async fn api_usage_summary(
+    State(state): State<AppState>,
+    Query(params): Query<UsageQueryParams>,
+) -> impl IntoResponse {
+    let tracker = match &state.usage_tracker {
+        Some(t) => t,
+        None => {
+            return axum::Json(serde_json::json!([]));
+        }
+    };
+    match tracker.query_summary(&params.to_filter()) {
+        Ok(rows) => axum::Json(serde_json::to_value(rows).unwrap_or_default()),
+        Err(e) => axum::Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+async fn api_usage_daily(
+    State(state): State<AppState>,
+    Query(params): Query<UsageQueryParams>,
+) -> impl IntoResponse {
+    let tracker = match &state.usage_tracker {
+        Some(t) => t,
+        None => {
+            return axum::Json(serde_json::json!([]));
+        }
+    };
+    match tracker.query_daily(&params.to_filter()) {
+        Ok(rows) => axum::Json(serde_json::to_value(rows).unwrap_or_default()),
+        Err(e) => axum::Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+async fn api_usage_filters(State(state): State<AppState>) -> impl IntoResponse {
+    let tracker = match &state.usage_tracker {
+        Some(t) => t,
+        None => {
+            return axum::Json(serde_json::json!({
+                "models": [],
+                "providers": [],
+                "agents": [],
+            }));
+        }
+    };
+    axum::Json(serde_json::json!({
+        "models": tracker.distinct_values("model").unwrap_or_default(),
+        "providers": tracker.distinct_values("provider").unwrap_or_default(),
+        "agents": tracker.distinct_values("agent").unwrap_or_default(),
+    }))
+}
+
 #[derive(Deserialize)]
 struct GeneratePromptRequest {
     name: String,
@@ -449,7 +536,7 @@ async fn api_generate_prompt(
         );
     }
 
-    let (model, _model_name) = state.models.default_model();
+    let (model, _model_name, _provider_name) = state.models.default_model();
 
     let prompt = format!(
         "Generate a system prompt for an AI assistant persona with the following details:\n\
@@ -929,7 +1016,10 @@ mod tests {
         let client: ollama::Client = ollama::Client::builder().api_key(Nothing).build().unwrap();
         let handle = CompletionModelHandle::new(Arc::new(client.completion_model("test")));
         let mut models = HashMap::new();
-        models.insert("default".to_string(), (handle, "test".to_string()));
+        models.insert(
+            "default".to_string(),
+            (handle, "test".to_string(), "ollama".to_string()),
+        );
         ModelPool::new(models)
     }
 
@@ -952,6 +1042,7 @@ mod tests {
             test_sessions_dir(),
             test_persona_store(),
             test_model_pool(),
+            None,
         )
         .unwrap();
         assert!(ch.is_allowed("anyone"));
@@ -970,6 +1061,7 @@ mod tests {
             test_sessions_dir(),
             test_persona_store(),
             test_model_pool(),
+            None,
         )
         .unwrap();
         assert!(ch.is_allowed("web:abc12345"));

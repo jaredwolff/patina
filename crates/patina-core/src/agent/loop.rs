@@ -16,6 +16,7 @@ use crate::agent::memory_index::MemoryIndex;
 use crate::agent::model_pool::ModelPool;
 use crate::session::SessionManager;
 use crate::tools::ToolRegistry;
+use crate::usage::{UsageRecord, UsageTracker};
 
 /// Find the largest byte index <= `max` that is a UTF-8 char boundary.
 fn floor_char_boundary(s: &str, max: usize) -> usize {
@@ -101,6 +102,8 @@ pub struct AgentLoop {
     pub memory_index: Option<Arc<MemoryIndex>>,
     /// Per-channel system prompt rules (channel name → rules text).
     pub channel_rules: std::collections::HashMap<String, String>,
+    /// Optional usage tracker for recording LLM API token consumption.
+    pub usage_tracker: Option<Arc<UsageTracker>>,
 }
 
 #[allow(deprecated)]
@@ -282,6 +285,22 @@ impl AgentLoop {
             })
             .collect();
 
+        // Resolve agent name for usage tracking
+        let agent_name = self
+            .sessions
+            .sessions
+            .get(session_key)
+            .and_then(|s| s.metadata.get("persona"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                if session_key.starts_with("subagent:") {
+                    session_key.to_string()
+                } else {
+                    "default".to_string()
+                }
+            });
+
         // Run the agent loop with tool calling
         let tier = model_tier.unwrap_or("default");
         let (response, tools_used, reasoning) = self
@@ -292,6 +311,7 @@ impl AgentLoop {
                 prompt,
                 &tool_defs,
                 tier,
+                &agent_name,
             )
             .await?;
 
@@ -386,6 +406,9 @@ impl AgentLoop {
     pub async fn run_consolidation(
         model: &CompletionModelHandle<'static>,
         task: &ConsolidationTask,
+        usage_tracker: Option<&Arc<UsageTracker>>,
+        model_name: &str,
+        provider_name: &str,
     ) -> Option<ConsolidationResult> {
         let prompt = format!(
             r#"You are a memory consolidation agent. Process this conversation and return a JSON object with exactly two keys:
@@ -424,6 +447,22 @@ Respond with ONLY valid JSON, no markdown fences."#,
                 return None;
             }
         };
+
+        // Record consolidation usage
+        if let Some(tracker) = usage_tracker {
+            tracker.record(&UsageRecord {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                session_key: task.session_key.clone(),
+                model: model_name.to_string(),
+                provider: provider_name.to_string(),
+                agent: "consolidation".to_string(),
+                input_tokens: response.usage.input_tokens,
+                output_tokens: response.usage.output_tokens,
+                total_tokens: response.usage.total_tokens,
+                cached_input_tokens: response.usage.cached_input_tokens,
+                call_type: "consolidation".to_string(),
+            });
+        }
 
         let response_text: String = response
             .choice
@@ -524,7 +563,7 @@ Respond with ONLY valid JSON, no markdown fences."#,
 
     /// Get the model handle for a given tier (cloned for use in spawned tasks).
     pub fn model_for_tier(&self, tier: &str) -> CompletionModelHandle<'static> {
-        let (model, _) = self.models.get(tier);
+        let (model, _, _) = self.models.get(tier);
         model.clone()
     }
 
@@ -535,8 +574,18 @@ Respond with ONLY valid JSON, no markdown fences."#,
             Some(t) => t,
             None => return,
         };
-        let (model, _) = self.models.get("consolidation");
-        if let Some(result) = Self::run_consolidation(model, &task).await {
+        let (model, model_name, provider_name) = self.models.get("consolidation");
+        let model_name = model_name.to_string();
+        let provider_name = provider_name.to_string();
+        if let Some(result) = Self::run_consolidation(
+            model,
+            &task,
+            self.usage_tracker.as_ref(),
+            &model_name,
+            &provider_name,
+        )
+        .await
+        {
             self.apply_consolidation(&result);
         }
     }
@@ -552,9 +601,11 @@ Respond with ONLY valid JSON, no markdown fences."#,
         prompt: Message,
         tool_defs: &[ToolDefinition],
         tier: &str,
+        agent_name: &str,
     ) -> Result<(String, Vec<String>, Option<String>)> {
-        let (model, model_name) = self.models.get(tier);
+        let (model, model_name, provider_name) = self.models.get(tier);
         let model_name = model_name.to_string();
+        let provider_name = provider_name.to_string();
         let mut tools_used = Vec::new();
         let mut current_prompt = prompt;
         let mut accumulated_reasoning = String::new();
@@ -614,6 +665,22 @@ Respond with ONLY valid JSON, no markdown fences."#,
                 .await
                 .map_err(|e| anyhow::anyhow!("LLM completion error: {e}"))?;
             let llm_elapsed = llm_start.elapsed();
+
+            // Record usage
+            if let Some(ref tracker) = self.usage_tracker {
+                tracker.record(&UsageRecord {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    session_key: session_key.to_string(),
+                    model: model_name.clone(),
+                    provider: provider_name.clone(),
+                    agent: agent_name.to_string(),
+                    input_tokens: response.usage.input_tokens,
+                    output_tokens: response.usage.output_tokens,
+                    total_tokens: response.usage.total_tokens,
+                    cached_input_tokens: response.usage.cached_input_tokens,
+                    call_type: "chat".to_string(),
+                });
+            }
 
             // Check what the model returned
             let mut has_tool_calls = false;

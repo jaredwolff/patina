@@ -471,7 +471,10 @@ fn create_model_pool(config: &patina_config::Config) -> Result<ModelPool> {
         );
 
         let handle = create_model_for(provider, model_name, config)?;
-        models.insert("default".to_string(), (handle, model_name.clone()));
+        models.insert(
+            "default".to_string(),
+            (handle, model_name.clone(), provider.clone()),
+        );
     } else {
         // Validate "default" tier exists
         if !config.agents.models.contains_key("default") {
@@ -486,7 +489,10 @@ fn create_model_pool(config: &patina_config::Config) -> Result<ModelPool> {
                 model_ref.provider,
                 model_ref.model
             );
-            models.insert(tier.clone(), (handle, model_ref.model.clone()));
+            models.insert(
+                tier.clone(),
+                (handle, model_ref.model.clone(), model_ref.provider.clone()),
+            );
         }
     }
 
@@ -564,13 +570,22 @@ fn build_agent_loop(
     let message_tool = Arc::new(MessageTool::new(bus.outbound_tx.clone()));
     tools.register(Box::new(ArcToolWrapper(message_tool.clone())));
 
+    // Usage tracker
+    let usage_db_path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".patina")
+        .join("usage.sqlite");
+    let usage_tracker = Arc::new(patina_core::usage::UsageTracker::new(&usage_db_path)?);
+
     // Subagent manager + spawn tool
-    let subagent_manager = Arc::new(SubagentManager::new(
+    let mut subagent_manager = SubagentManager::new(
         model_pool.clone(),
         workspace.to_path_buf(),
         bus.inbound_tx.clone(),
         config.clone(),
-    ));
+    );
+    subagent_manager.set_usage_tracker(usage_tracker.clone());
+    let subagent_manager = Arc::new(subagent_manager);
     let spawn_tool = Arc::new(SpawnTool::new(subagent_manager));
     tools.register(Box::new(ArcToolWrapper(spawn_tool.clone())));
 
@@ -616,6 +631,7 @@ fn build_agent_loop(
         model_overrides: ModelOverrides::defaults(),
         memory_index: Some(memory_index),
         channel_rules: HashMap::new(),
+        usage_tracker: Some(usage_tracker.clone()),
     };
 
     Ok((agent_loop, context_tools, cron_service, bus))
@@ -735,6 +751,7 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
             sessions_dir,
             persona_store.clone(),
             agent_loop.models.clone(),
+            agent_loop.usage_tracker.clone(),
         ) {
             Ok(web) => {
                 channel_manager.register(Arc::new(web)).await;
@@ -853,10 +870,21 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                                 agent_loop.prepare_consolidation(&session_key, false)
                             {
                                 let model = agent_loop.model_for_tier("consolidation");
+                                let tracker = agent_loop.usage_tracker.clone();
+                                let (_, cm_name, cm_provider) =
+                                    agent_loop.models.get("consolidation");
+                                let cm_name = cm_name.to_string();
+                                let cm_provider = cm_provider.to_string();
                                 let tx = consol_tx.clone();
                                 tokio::spawn(async move {
-                                    if let Some(result) =
-                                        AgentLoop::run_consolidation(&model, &task).await
+                                    if let Some(result) = AgentLoop::run_consolidation(
+                                        &model,
+                                        &task,
+                                        tracker.as_ref(),
+                                        &cm_name,
+                                        &cm_provider,
+                                    )
+                                    .await
                                     {
                                         let _ = tx.send(result).await;
                                     }
@@ -1119,10 +1147,20 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                     if needs_consolidation {
                         if let Some(task) = agent_loop.prepare_consolidation(&session_key, false) {
                             let model = agent_loop.model_for_tier("consolidation");
+                            let tracker = agent_loop.usage_tracker.clone();
+                            let (_, cm_name, cm_provider) = agent_loop.models.get("consolidation");
+                            let cm_name = cm_name.to_string();
+                            let cm_provider = cm_provider.to_string();
                             let tx = consol_tx.clone();
                             tokio::spawn(async move {
-                                if let Some(result) =
-                                    AgentLoop::run_consolidation(&model, &task).await
+                                if let Some(result) = AgentLoop::run_consolidation(
+                                    &model,
+                                    &task,
+                                    tracker.as_ref(),
+                                    &cm_name,
+                                    &cm_provider,
+                                )
+                                .await
                                 {
                                     let _ = tx.send(result).await;
                                 }
