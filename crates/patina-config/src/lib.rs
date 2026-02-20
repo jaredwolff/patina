@@ -4,5 +4,5 @@ pub mod schema;
 pub use loader::{find_config_path, load_config, resolve_workspace, save_config};
 pub use schema::{
     Config, GatewayConfig, HeartbeatConfig, ModelRef, ProviderConfig, SlackConfig, TelegramConfig,
-    TelegramMode, TranscriptionConfig, TranscriptionMode,
+    TelegramMode, TranscriptionConfig, TranscriptionMode, WebConfig,
 };

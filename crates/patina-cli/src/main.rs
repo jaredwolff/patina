@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use patina_channels::manager::ChannelManager;
 use patina_channels::slack::SlackChannel;
 use patina_channels::telegram::TelegramChannel;
+use patina_channels::web::WebChannel;
 use patina_config::{find_config_path, load_config, resolve_workspace};
 use patina_core::agent::subagent::SubagentManager;
 use patina_core::agent::{
@@ -712,6 +713,23 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
         }
     }
 
+    // Register Web channel if enabled
+    if config.channels.web.enabled {
+        match WebChannel::new(config.channels.web.clone(), config.gateway.clone()) {
+            Ok(web) => {
+                channel_manager.register(Arc::new(web)).await;
+                tracing::info!(
+                    "Web channel registered on {}:{}",
+                    config.gateway.host,
+                    config.gateway.port
+                );
+            }
+            Err(e) => {
+                tracing::error!("Failed to create Web channel: {e}");
+            }
+        }
+    }
+
     // Start all channels (spawns polling + outbound dispatcher)
     let enabled = channel_manager.enabled_channels().await;
     if enabled.is_empty() {
@@ -1291,6 +1309,13 @@ fn run_onboard(config_arg: Option<PathBuf>, non_interactive: bool) -> Result<()>
                     prompt_with_default("Slack bot token (xoxb-*)", &cfg.channels.slack.bot_token)?;
             }
 
+            let enable_web = prompt_yes_no("Enable Web chat channel?", false)?;
+            cfg.channels.web.enabled = enable_web;
+            if enable_web {
+                let pw = prompt_with_default("Web chat password (empty for open access)", "")?;
+                cfg.channels.web.password = pw;
+            }
+
             let mode = prompt_with_default("Transcription mode (auto/local/groq)", "auto")?;
             cfg.transcription.mode = match mode.to_lowercase().as_str() {
                 "local" => patina_config::TranscriptionMode::Local,
@@ -1741,6 +1766,26 @@ fn run_channel_command(action: ChannelCommands, config: &patina_config::Config) 
                         sl.allow_from.len()
                     );
                 }
+            }
+
+            // Web
+            let web = &config.channels.web;
+            println!();
+            println!("  Web:");
+            println!("    Enabled: {}", web.enabled);
+            if web.enabled {
+                println!(
+                    "    Listen:  {}:{}",
+                    config.gateway.host, config.gateway.port
+                );
+                println!(
+                    "    Auth:    {}",
+                    if web.password.is_empty() {
+                        "open (no password)"
+                    } else {
+                        "password required"
+                    }
+                );
             }
         }
     }

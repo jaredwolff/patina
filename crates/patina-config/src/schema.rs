@@ -66,6 +66,7 @@ impl Default for AgentDefaults {
 pub struct ChannelsConfig {
     pub telegram: TelegramConfig,
     pub slack: SlackConfig,
+    pub web: WebConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -102,6 +103,15 @@ pub struct SlackConfig {
     pub app_token: String,
     /// Bot token (xoxb-*) for Web API calls.
     pub bot_token: String,
+    pub allow_from: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WebConfig {
+    pub enabled: bool,
+    /// Optional password for access control. If empty, no auth required.
+    pub password: String,
     pub allow_from: Vec<String>,
 }
 

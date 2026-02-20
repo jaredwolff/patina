@@ -34,7 +34,16 @@
       "appToken": "",
       "botToken": "",
       "allowFrom": []
+    },
+    "web": {
+      "enabled": false,
+      "password": "",
+      "allowFrom": []
     }
+  },
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 18790
   },
   "providers": {
     "ollama": {

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Patina Chat</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>Patina</h1>
+      <span id="status" class="status disconnected">disconnected</span>
+    </header>
+    <div id="messages"></div>
+    <form id="input-form">
+      <textarea id="input" placeholder="Type a message..." rows="1" autocomplete="off"></textarea>
+      <button type="submit" id="send-btn" disabled>Send</button>
+    </form>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

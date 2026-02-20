@@ -21,3 +21,7 @@ chrono = { workspace = true }
 patina-transcribe = { workspace = true }
 url = { workspace = true }
 slack-morphism = { workspace = true }
+axum = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
+uuid = { workspace = true }
