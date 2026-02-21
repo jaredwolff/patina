@@ -37,12 +37,13 @@ Patina-bot is a lightweight AI agent framework designed to run LLM agents with t
 
 ## Workspace Structure
 
-This is a Cargo workspace with 4 crates:
+This is a Cargo workspace with 5 crates:
 
-- **patina-core**: Agent loop, session management, tool system, message bus
+- **patina-core**: Agent loop, session management, tool system, message bus, usage tracking
 - **patina-config**: Configuration schema and loading
-- **patina-channels**: Channel adapters (Telegram, etc.) and ChannelManager
+- **patina-channels**: Channel adapters (Web, Telegram, Slack) and ChannelManager
 - **patina-cli**: Main binary with CLI and gateway modes
+- **patina-transcribe**: Voice transcription (local Parakeet TDT + Groq fallback)
 
 ## Build and Test Commands
 
@@ -179,7 +180,7 @@ Supported providers: `anthropic`, `openai`, `ollama`, `openrouter`, `deepseek`, 
 
 API keys are resolved from config first (`providers.<name>.apiKey`), then from environment variables (e.g. `ANTHROPIC_API_KEY`).
 
-The codebase uses `rig-core` 0.30 for LLM abstraction. The `CompletionModelHandle` pattern is used to work around lifetime issues.
+The codebase uses `rig-core` 0.30 for LLM abstraction. The `CompletionModelHandle` pattern is used to work around lifetime issues. Anthropic models use `.with_prompt_caching()` for cache_control support. Streaming uses `model.stream()` which yields `StreamedAssistantContent` chunks forwarded to the web UI via `stream_tx` channel.
 
 ### Context Builder (patina-core/src/agent/context.rs)
 
@@ -213,36 +214,47 @@ Uses `tracing` with env filter (default: info level). Set `RUST_LOG=debug` for v
 ### Gateway Mode
 
 The `serve` command (implemented in `patina-cli/src/main.rs` via `run_gateway()`) starts the full gateway:
-1. Initializes `ChannelManager` and registers enabled channels
-2. Starts Telegram long polling (with Parakeet transcription)
-3. Starts cron service and heartbeat (if enabled)
-4. Routes inbound messages through `MessageBus` to `AgentLoop`
-5. Handles `/new`, `/help`, `/start` slash commands
-6. Dispatches outbound messages to appropriate channels
-7. Graceful shutdown on Ctrl-C
+1. Initializes `ChannelManager` and registers enabled channels (Web, Telegram, Slack)
+2. Starts Web UI (axum HTTP server + WebSocket) with streaming forwarder
+3. Starts Telegram long polling (with Parakeet transcription) if enabled
+4. Starts Slack Socket Mode if enabled
+5. Starts cron service and heartbeat (if enabled)
+6. Routes inbound messages through `MessageBus` to `AgentLoop`
+7. Streams LLM text chunks to web clients via `text_delta` WebSocket messages
+8. Handles `/new`, `/help`, `/start` slash commands
+9. Dispatches outbound messages to appropriate channels
+10. Graceful shutdown on Ctrl-C
 
 ## Implementation Status
 
-Core agent (all tools, memory, skills, cron, heartbeat, subagents) and Telegram channel are fully implemented. The main remaining gaps are additional channel integrations and polish items.
+Core agent, all tools, memory, skills, cron, heartbeat, subagents, and three channels (Web, Telegram, Slack) are fully implemented.
 
 Implemented:
 - ✅ Config loading (JSON with camelCase, serde)
 - ✅ Session persistence (JSONL)
 - ✅ Message bus (tokio mpsc/broadcast)
 - ✅ LLM integration via rig-core (Ollama default, OpenAI-compatible support)
+- ✅ LLM streaming (rig-core stream(), text_delta WebSocket forwarding)
+- ✅ Anthropic prompt caching (cache_control support)
 - ✅ Tool system (registry + all 12 tools: filesystem, shell, web, message, spawn, cron)
 - ✅ Agent loop (LLM ↔ tool iteration)
 - ✅ Context builder (system prompt + message history)
 - ✅ CLI (interactive mode with rustyline)
 - ✅ Memory consolidation (MEMORY.md/HISTORY.md summarization)
+- ✅ Memory index (FTS5 search with SHA256 change detection)
 - ✅ Skills loader (YAML frontmatter, progressive loading)
 - ✅ Web tools (Brave search, readability extraction)
 - ✅ Subagent system (background task spawning)
 - ✅ Cron service
 - ✅ Heartbeat
+- ✅ Web UI channel (multi-chat, personas, streaming, usage dashboard, cancel/interrupt)
 - ✅ Telegram channel (teloxide, voice transcription, media handling)
+- ✅ Slack channel (Socket Mode, thread support, allowlist)
 - ✅ Voice transcription (local Parakeet TDT + Groq fallback)
-- ✅ Gateway mode (`serve` command with Telegram)
+- ✅ Gateway mode (`serve` command with Web, Telegram, Slack)
+- ✅ Agent personas (per-chat, UI-managed, model tiers)
+- ✅ Usage tracking (SQLite, cost estimates, web dashboard)
+- ✅ Cancel/interrupt from web UI (ESC key + flag-file mechanism)
 - ✅ Onboarding wizard (interactive + `--non-interactive`)
 - ✅ Status/interrupt commands (flag-file interrupt mechanism)
 - ✅ Binary packaging (release script + checksums)
@@ -253,7 +265,7 @@ Remaining polish:
 - ⚠️ Telegram integration test — only unit tests exist, no end-to-end test
 
 Future enhancements:
-- ❌ Additional channels (Discord, Slack, Email)
+- ❌ Additional channels (Discord, Email)
 - ❌ Semantic memory with vector databases
 - ❌ Security improvements from LocalGPT (see `plans/LOCALGPT_COMPARISON.md`)
 - ❌ Monty code execution mode (see `plans/MONTY_CODE_MODE_PLAN.md`)
@@ -318,7 +330,7 @@ pub trait Channel: Send + Sync {
 }
 ```
 
-Currently implemented: Telegram. Future: Discord → Slack → Email.
+Currently implemented: Web UI, Telegram, Slack. Future: Discord, Email.
 
 ## Code Quality Guidelines
 
