@@ -27,6 +27,7 @@
   var usageViewEl = document.getElementById("usage-view");
   var headerH1 = document.querySelector("#chat-area header h1");
   var chatIdEl = document.getElementById("chat-id");
+  var scrollBtn = document.getElementById("scroll-bottom-btn");
 
   var ws = null;
   var reconnectDelay = 1000;
@@ -1106,6 +1107,17 @@
       e.preventDefault();
       formEl.dispatchEvent(new Event("submit"));
     }
+  });
+
+  messagesEl.addEventListener("scroll", function () {
+    var nearBottom =
+      messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight <
+      100;
+    scrollBtn.classList.toggle("hidden", nearBottom);
+  });
+
+  scrollBtn.addEventListener("click", function () {
+    scrollToBottom();
   });
 
   newChatBtn.addEventListener("click", function () {
