@@ -779,6 +779,15 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                             },
                         );
                     }
+                    "cancel" => {
+                        if parsed.chat_id.is_empty() {
+                            continue;
+                        }
+                        let session_key = format!("web:{}", parsed.chat_id);
+                        if let Err(e) = write_interrupt_flag(&session_key) {
+                            warn!("Failed to write interrupt flag: {e}");
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1018,6 +1027,25 @@ fn list_web_sessions(sessions_dir: &std::path::Path) -> Vec<SessionInfo> {
     // Sort by updated_at descending
     sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     sessions
+}
+
+/// Write an interrupt flag file for the given session key.
+/// The agent loop checks for this flag and breaks out of streaming/tool loops.
+fn write_interrupt_flag(session_key: &str) -> std::io::Result<()> {
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let dir = home.join(".patina").join("interrupts");
+    std::fs::create_dir_all(&dir)?;
+    let safe: String = session_key
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | ' ' => '_',
+            _ => c,
+        })
+        .collect();
+    std::fs::write(
+        dir.join(format!("{safe}.flag")),
+        chrono::Utc::now().to_rfc3339(),
+    )
 }
 
 #[cfg(test)]

@@ -309,6 +309,11 @@ impl AgentLoop {
                 }
             });
 
+        // Save user message immediately so it persists even if streaming is interrupted
+        let session = self.sessions.get_or_create_checked(session_key)?;
+        session.add_message("user", user_message);
+        self.sessions.save(session_key)?;
+
         // Run the agent loop with tool calling
         let tier = model_tier.unwrap_or("default");
         let (response, tools_used, reasoning) = self
@@ -323,9 +328,8 @@ impl AgentLoop {
             )
             .await?;
 
-        // Save to session
+        // Save assistant response
         let session = self.sessions.get_or_create_checked(session_key)?;
-        session.add_message("user", user_message);
         session.add_message_full("assistant", &response, tools_used, reasoning);
         self.sessions.save(session_key)?;
 
@@ -678,8 +682,10 @@ Respond with ONLY valid JSON, no markdown fences."#,
             let mut has_tool_calls = false;
             let mut text_content = String::new();
             let mut tool_calls_to_execute: Vec<ToolCall> = Vec::new();
+            let mut interrupted_during_stream = false;
 
             use futures::StreamExt;
+            let mut chunk_count: usize = 0;
             while let Some(chunk) = stream.next().await {
                 match chunk {
                     Ok(rig::streaming::StreamedAssistantContent::Text(t)) => {
@@ -690,6 +696,13 @@ Respond with ONLY valid JSON, no markdown fences."#,
                                 session_key: session_key.to_string(),
                                 text: t.text.clone(),
                             });
+                        }
+                        // Periodically check for interrupt during streaming
+                        chunk_count += 1;
+                        if chunk_count % 20 == 0 && Self::consume_interrupt(session_key) {
+                            info!("Interrupted during streaming at chunk {chunk_count}");
+                            interrupted_during_stream = true;
+                            break;
                         }
                     }
                     Ok(rig::streaming::StreamedAssistantContent::ToolCall {
@@ -754,6 +767,14 @@ Respond with ONLY valid JSON, no markdown fences."#,
             } else {
                 Some(accumulated_reasoning.clone())
             };
+
+            // If interrupted during streaming, return whatever text we have so far
+            if interrupted_during_stream {
+                if text_content.is_empty() {
+                    text_content = "Interrupted.".into();
+                }
+                return Ok((text_content, tools_used, reasoning));
+            }
 
             if !has_tool_calls {
                 // Model returned a text response — we're done

@@ -39,6 +39,7 @@
   var unreadChats = {};
   var streamingDiv = null;
   var streamingText = "";
+  var isGenerating = false;
 
   function loadSessions() {
     // Migrate from old single-session format
@@ -238,6 +239,13 @@
       thinkingEl.remove();
       thinkingEl = null;
     }
+  }
+
+  function setGenerating(active) {
+    isGenerating = active;
+    sendBtn.textContent = active ? "Stop" : "Send";
+    sendBtn.disabled = false;
+    inputEl.disabled = active;
   }
 
   // --- Sidebar ---
@@ -584,6 +592,7 @@
           }
           break;
         case "message":
+          setGenerating(false);
           if (data.chatId === activeChatId) {
             if (streamingDiv) {
               streamingDiv.innerHTML = renderMarkdown(data.content);
@@ -711,6 +720,7 @@
     }
 
     ws.send(JSON.stringify(msg));
+    setGenerating(true);
   }
 
   // --- Sync sessions from server ---
@@ -1063,6 +1073,15 @@
 
   formEl.addEventListener("submit", function (e) {
     e.preventDefault();
+    if (isGenerating) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "cancel", chatId: activeChatId }));
+      }
+      setGenerating(false);
+      removeThinking();
+      // Leave streamingDiv in place — the incoming "message" will finalize it
+      return;
+    }
     var text = inputEl.value.trim();
     if (!text) return;
     sendMessage(text);
@@ -1073,6 +1092,13 @@
   inputEl.addEventListener("input", function () {
     this.style.height = "auto";
     this.style.height = Math.min(this.scrollHeight, 120) + "px";
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && isGenerating) {
+      e.preventDefault();
+      formEl.dispatchEvent(new Event("submit"));
+    }
   });
 
   inputEl.addEventListener("keydown", function (e) {
