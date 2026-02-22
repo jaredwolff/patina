@@ -78,7 +78,7 @@ cd web && bun install && bun run build
 cd web && bun run dev
 
 # TypeScript type check
-cd web && npx tsc --noEmit
+cd web && bun run typecheck
 ```
 
 ## Communication Style
