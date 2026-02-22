@@ -20,6 +20,7 @@ use patina_config::{GatewayConfig, WebConfig};
 use patina_core::agent::ModelPool;
 use patina_core::bus::InboundMessage;
 use patina_core::persona::PersonaStore;
+use patina_core::task::TaskManager;
 use patina_core::usage::{UsageFilter, UsageTracker};
 use rig::completion::{CompletionModel, CompletionRequest, Message as RigMessage};
 use rig::message::{AssistantContent, Text, UserContent};
@@ -42,6 +43,7 @@ pub struct WebChannel {
     models: ModelPool,
     usage_tracker: Option<Arc<UsageTracker>>,
     pricing: HashMap<String, ModelPricing>,
+    task_manager: Option<Arc<tokio::sync::Mutex<TaskManager>>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
 }
 
@@ -56,6 +58,7 @@ struct AppState {
     model_tiers: Vec<String>,
     usage_tracker: Option<Arc<UsageTracker>>,
     pricing: HashMap<String, ModelPricing>,
+    task_manager: Option<Arc<tokio::sync::Mutex<TaskManager>>>,
 }
 
 #[derive(Deserialize)]
@@ -118,8 +121,14 @@ impl WebChannel {
             models,
             usage_tracker,
             pricing,
+            task_manager: None,
             shutdown_tx: Mutex::new(None),
         })
+    }
+
+    /// Set the task manager for the Kanban board API.
+    pub fn set_task_manager(&mut self, manager: Arc<tokio::sync::Mutex<TaskManager>>) {
+        self.task_manager = Some(manager);
     }
 }
 
@@ -141,6 +150,7 @@ impl Channel for WebChannel {
             model_tiers,
             usage_tracker: self.usage_tracker.clone(),
             pricing: self.pricing.clone(),
+            task_manager: self.task_manager.clone(),
         };
 
         let router = Router::new()
@@ -170,6 +180,18 @@ impl Channel for WebChannel {
             .route("/api/usage/summary", get(api_usage_summary))
             .route("/api/usage/daily", get(api_usage_daily))
             .route("/api/usage/filters", get(api_usage_filters))
+            .route("/api/tasks", get(api_list_tasks).post(api_create_task))
+            .route(
+                "/api/tasks/{id}",
+                put(api_update_task).delete(api_delete_task),
+            )
+            .route("/api/tasks/{id}/move", put(api_move_task))
+            .route("/api/tasks/{id}/assign", put(api_assign_task))
+            .route(
+                "/api/tasks/{id}/comments",
+                axum::routing::post(api_add_task_comment),
+            )
+            .route("/api/tasks/{id}/history", get(api_task_history))
             .with_state(state);
 
         let addr: SocketAddr = format!("{}:{}", self.gateway_config.host, self.gateway_config.port)
@@ -611,6 +633,336 @@ async fn api_generate_prompt(
     }
 }
 
+// --- Task API ---
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskQueryParams {
+    status: Option<String>,
+    assignee: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateTaskRequest {
+    title: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    priority: Option<String>,
+    #[serde(default)]
+    assignee: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateTaskRequest {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    priority: Option<String>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MoveTaskRequest {
+    status: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AssignTaskRequest {
+    assignee: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddCommentRequest {
+    content: String,
+    #[serde(default)]
+    author: Option<String>,
+}
+
+async fn api_list_tasks(
+    State(state): State<AppState>,
+    Query(params): Query<TaskQueryParams>,
+) -> impl IntoResponse {
+    let tm = match &state.task_manager {
+        Some(tm) => tm,
+        None => {
+            return axum::Json(serde_json::json!([]));
+        }
+    };
+    let mut mgr = tm.lock().await;
+    let filter_status = params
+        .status
+        .as_deref()
+        .and_then(patina_core::task::TaskStatus::from_str);
+    let tasks = mgr.list(filter_status.as_ref(), params.assignee.as_deref());
+    let json: Vec<serde_json::Value> = tasks
+        .iter()
+        .map(|t| serde_json::to_value(t).unwrap_or_default())
+        .collect();
+    axum::Json(serde_json::Value::Array(json))
+}
+
+async fn api_create_task(
+    State(state): State<AppState>,
+    axum::Json(req): axum::Json<CreateTaskRequest>,
+) -> impl IntoResponse {
+    let tm = match &state.task_manager {
+        Some(tm) => tm,
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({"error": "task manager not available"})),
+            );
+        }
+    };
+    let priority = req
+        .priority
+        .as_deref()
+        .and_then(patina_core::task::TaskPriority::from_str)
+        .unwrap_or(patina_core::task::TaskPriority::Medium);
+
+    let mut mgr = tm.lock().await;
+    match mgr.add(
+        &req.title,
+        &req.description,
+        priority,
+        req.assignee,
+        req.tags,
+        "web",
+    ) {
+        Ok(task) => (
+            axum::http::StatusCode::CREATED,
+            axum::Json(serde_json::to_value(task).unwrap_or_default()),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+async fn api_update_task(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    axum::Json(req): axum::Json<UpdateTaskRequest>,
+) -> impl IntoResponse {
+    let tm = match &state.task_manager {
+        Some(tm) => tm,
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({"error": "task manager not available"})),
+            );
+        }
+    };
+    let priority = req
+        .priority
+        .as_deref()
+        .and_then(patina_core::task::TaskPriority::from_str);
+
+    let mut mgr = tm.lock().await;
+    match mgr.update(
+        &id,
+        req.title.as_deref(),
+        req.description.as_deref(),
+        priority,
+        req.tags,
+    ) {
+        Ok(true) => {
+            let task = mgr.get(&id).cloned();
+            (
+                axum::http::StatusCode::OK,
+                axum::Json(serde_json::to_value(task).unwrap_or_default()),
+            )
+        }
+        Ok(false) => (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "task not found"})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+async fn api_delete_task(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> impl IntoResponse {
+    let tm = match &state.task_manager {
+        Some(tm) => tm,
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({"error": "task manager not available"})),
+            );
+        }
+    };
+    let mut mgr = tm.lock().await;
+    match mgr.delete(&id) {
+        Ok(true) => (
+            axum::http::StatusCode::OK,
+            axum::Json(serde_json::json!({"deleted": true})),
+        ),
+        Ok(false) => (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "task not found"})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+async fn api_move_task(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    axum::Json(req): axum::Json<MoveTaskRequest>,
+) -> impl IntoResponse {
+    let tm = match &state.task_manager {
+        Some(tm) => tm,
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({"error": "task manager not available"})),
+            );
+        }
+    };
+    let status = match patina_core::task::TaskStatus::from_str(&req.status) {
+        Some(s) => s,
+        None => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"error": "invalid status"})),
+            );
+        }
+    };
+    let mut mgr = tm.lock().await;
+    match mgr.move_task(&id, status) {
+        Ok(true) => {
+            log_task_activity(
+                &state.sessions_dir,
+                &id,
+                &format!("User changed status to {}", req.status),
+            );
+            let task = mgr.get(&id).cloned();
+            (
+                axum::http::StatusCode::OK,
+                axum::Json(serde_json::to_value(task).unwrap_or_default()),
+            )
+        }
+        Ok(false) => (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "task not found"})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+async fn api_assign_task(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    axum::Json(req): axum::Json<AssignTaskRequest>,
+) -> impl IntoResponse {
+    let tm = match &state.task_manager {
+        Some(tm) => tm,
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({"error": "task manager not available"})),
+            );
+        }
+    };
+    let mut mgr = tm.lock().await;
+    match mgr.assign(&id, req.assignee.as_deref()) {
+        Ok(true) => {
+            let display = match req.assignee.as_deref() {
+                Some(a) => format!("User assigned to {a}"),
+                None => "User unassigned task".to_string(),
+            };
+            log_task_activity(&state.sessions_dir, &id, &display);
+            let task = mgr.get(&id).cloned();
+            (
+                axum::http::StatusCode::OK,
+                axum::Json(serde_json::to_value(task).unwrap_or_default()),
+            )
+        }
+        Ok(false) => (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "task not found"})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+async fn api_add_task_comment(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    axum::Json(req): axum::Json<AddCommentRequest>,
+) -> impl IntoResponse {
+    let tm = match &state.task_manager {
+        Some(tm) => tm,
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({"error": "task manager not available"})),
+            );
+        }
+    };
+    let author = req.author.as_deref().unwrap_or("web");
+    let mut mgr = tm.lock().await;
+    match mgr.add_comment(&id, author, &req.content) {
+        Ok(true) => (
+            axum::http::StatusCode::OK,
+            axum::Json(serde_json::json!({"added": true})),
+        ),
+        Ok(false) => (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "task not found"})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+/// Write a system message to a task's session for activity logging.
+fn log_task_activity(sessions_dir: &std::path::Path, task_id: &str, event: &str) {
+    let mut sm = patina_core::session::SessionManager::new(sessions_dir.to_path_buf());
+    let key = format!("task:{task_id}");
+    let session = sm.get_or_create(&key);
+    session.add_message("system", event);
+    let _ = sm.save(&key);
+}
+
+async fn api_task_history(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> impl IntoResponse {
+    let session_key = format!("task:{id}");
+    let history = load_session_history_by_key(&state.sessions_dir, &session_key);
+    axum::Json(serde_json::json!({ "messages": history }))
+}
+
 async fn ws_upgrade(
     ws: WebSocketUpgrade,
     Query(params): Query<WsParams>,
@@ -788,6 +1140,72 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                             warn!("Failed to write interrupt flag: {e}");
                         }
                     }
+                    "get_task_history" => {
+                        if parsed.chat_id.is_empty() {
+                            continue;
+                        }
+                        let session_key = format!("task:{}", parsed.chat_id);
+                        let history =
+                            load_session_history_by_key(&state.sessions_dir, &session_key);
+                        let history_msg = WsOutMsg {
+                            msg_type: "task_history".to_string(),
+                            content: None,
+                            chat_id: Some(parsed.chat_id.clone()),
+                            timestamp: None,
+                            messages: Some(history),
+                        };
+                        if let Ok(json) = serde_json::to_string(&history_msg) {
+                            let _ = tx.send(Message::Text(json.into()));
+                        }
+                    }
+                    "task_message" => {
+                        let chat_id = parsed.chat_id;
+                        if chat_id.is_empty() || parsed.content.trim().is_empty() {
+                            continue;
+                        }
+
+                        // Echo user message to other connected clients
+                        broadcast_to_others(
+                            &state.connections,
+                            &conn_id,
+                            &WsOutMsg {
+                                msg_type: "user_message".to_string(),
+                                content: Some(parsed.content.clone()),
+                                chat_id: Some(chat_id.clone()),
+                                timestamp: Some(chrono::Local::now().to_rfc3339()),
+                                messages: None,
+                            },
+                        );
+
+                        // Notify other clients that agent is processing
+                        broadcast_to_others(
+                            &state.connections,
+                            &conn_id,
+                            &WsOutMsg {
+                                msg_type: "thinking".to_string(),
+                                content: None,
+                                chat_id: Some(chat_id.clone()),
+                                timestamp: None,
+                                messages: None,
+                            },
+                        );
+
+                        let sender_id = format!("task:{}", &chat_id[..chat_id.len().min(8)]);
+
+                        let inbound = InboundMessage {
+                            channel: "task".to_string(),
+                            sender_id,
+                            chat_id,
+                            content: parsed.content,
+                            media: Vec::new(),
+                            metadata: HashMap::new(),
+                            timestamp: chrono::Local::now().to_rfc3339(),
+                        };
+                        if let Err(e) = state.inbound_tx.send(inbound).await {
+                            error!("Failed to send task inbound message: {e}");
+                            break;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -823,7 +1241,8 @@ fn send_history(
     chat_id: &str,
     tx: &mpsc::UnboundedSender<Message>,
 ) {
-    let history = load_session_history(sessions_dir, chat_id);
+    let session_key = format!("web:{chat_id}");
+    let history = load_session_history_by_key(sessions_dir, &session_key);
     if !history.is_empty() {
         let history_msg = WsOutMsg {
             msg_type: "history".to_string(),
@@ -856,10 +1275,12 @@ async fn ws_write_loop(
 const MAX_HISTORY_MESSAGES: usize = 100;
 
 /// Load message history from a session's JSONL file.
-/// Returns user/assistant messages only, capped at MAX_HISTORY_MESSAGES.
-fn load_session_history(sessions_dir: &std::path::Path, chat_id: &str) -> Vec<HistoryMessage> {
-    // Mirror SessionManager::session_path: replace ':' with '_'
-    let session_key = format!("web:{chat_id}");
+/// Returns user/assistant/system messages, capped at MAX_HISTORY_MESSAGES.
+/// `session_key` is the full key (e.g. "web:{chat_id}" or "task:{task_id}").
+fn load_session_history_by_key(
+    sessions_dir: &std::path::Path,
+    session_key: &str,
+) -> Vec<HistoryMessage> {
     let safe_key = session_key.replace(':', "_");
     let path = sessions_dir.join(format!("{safe_key}.jsonl"));
 
@@ -892,7 +1313,7 @@ fn load_session_history(sessions_dir: &std::path::Path, chat_id: &str) -> Vec<Hi
         }
 
         let role = match value.get("role").and_then(|r| r.as_str()) {
-            Some(r) if r == "user" || r == "assistant" => r.to_string(),
+            Some(r) if r == "user" || r == "assistant" || r == "system" => r.to_string(),
             _ => continue,
         };
 
@@ -1214,7 +1635,7 @@ mod tests {
     #[test]
     fn test_load_session_history_missing_file() {
         let dir = TempDir::new().unwrap();
-        let history = load_session_history(dir.path(), "nonexistent-uuid");
+        let history = load_session_history_by_key(dir.path(), "web:nonexistent-uuid");
         assert!(history.is_empty());
     }
 
@@ -1241,12 +1662,14 @@ mod tests {
         .unwrap();
         drop(f);
 
-        let history = load_session_history(dir.path(), "test-uuid");
-        assert_eq!(history.len(), 2);
+        let history = load_session_history_by_key(dir.path(), "web:test-uuid");
+        assert_eq!(history.len(), 3);
         assert_eq!(history[0].role, "user");
         assert_eq!(history[0].content, "hello");
         assert_eq!(history[1].role, "assistant");
         assert_eq!(history[1].content, "hi there");
+        assert_eq!(history[2].role, "system");
+        assert_eq!(history[2].content, "system msg");
     }
 
     #[test]
@@ -1260,7 +1683,7 @@ mod tests {
         }
         drop(f);
 
-        let history = load_session_history(dir.path(), "big-uuid");
+        let history = load_session_history_by_key(dir.path(), "web:big-uuid");
         assert_eq!(history.len(), MAX_HISTORY_MESSAGES);
         // Should be the last 100
         assert!(history[0].content.contains("50"));

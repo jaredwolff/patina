@@ -17,12 +17,14 @@ use patina_core::bus::{InboundMessage, MessageBus, OutboundMessage};
 use patina_core::cron::CronService;
 use patina_core::persona::PersonaStore;
 use patina_core::session::SessionManager;
+use patina_core::task::TaskManager;
 use patina_core::tools::cron::CronTool;
 use patina_core::tools::filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
 use patina_core::tools::memory_search::MemorySearchTool;
 use patina_core::tools::message::MessageTool;
 use patina_core::tools::shell::ExecTool;
 use patina_core::tools::spawn::SpawnTool;
+use patina_core::tools::task::TaskTool;
 use patina_core::tools::web::{WebFetchTool, WebSearchTool};
 use patina_core::tools::ToolRegistry;
 #[allow(deprecated)]
@@ -217,7 +219,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Agent { message, session } => {
-            let (agent_loop, context_tools, _cron_service, _bus) =
+            let (agent_loop, context_tools, _cron_service, _bus, _task_manager) =
                 build_agent_loop(&config, &workspace)?;
 
             if let Some(msg) = message {
@@ -506,6 +508,7 @@ struct ContextTools {
     message_tool: Arc<MessageTool>,
     spawn_tool: Arc<SpawnTool>,
     cron_tool: Arc<CronTool>,
+    task_tool: Arc<TaskTool>,
 }
 
 impl ContextTools {
@@ -514,6 +517,7 @@ impl ContextTools {
         self.message_tool.set_context(channel, chat_id).await;
         self.spawn_tool.set_context(channel, chat_id).await;
         self.cron_tool.set_context(channel, chat_id).await;
+        self.task_tool.set_context(channel, chat_id).await;
     }
 }
 
@@ -522,7 +526,13 @@ impl ContextTools {
 fn build_agent_loop(
     config: &patina_config::Config,
     workspace: &Path,
-) -> Result<(AgentLoop, ContextTools, Arc<Mutex<CronService>>, MessageBus)> {
+) -> Result<(
+    AgentLoop,
+    ContextTools,
+    Arc<Mutex<CronService>>,
+    MessageBus,
+    Arc<Mutex<TaskManager>>,
+)> {
     let defaults = &config.agents.defaults;
     let model_pool = create_model_pool(config)?;
 
@@ -534,6 +544,7 @@ fn build_agent_loop(
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".patina")
         .join("sessions");
+    let sessions_dir_for_tasks = sessions_dir.clone();
     let sessions = SessionManager::new(sessions_dir);
 
     // Context builder (workspace + embedded builtin skills)
@@ -588,6 +599,7 @@ fn build_agent_loop(
     );
     subagent_manager.set_usage_tracker(usage_tracker.clone());
     let subagent_manager = Arc::new(subagent_manager);
+    let subagent_manager_for_tasks = subagent_manager.clone();
     let spawn_tool = Arc::new(SpawnTool::new(subagent_manager));
     tools.register(Box::new(ArcToolWrapper(spawn_tool.clone())));
 
@@ -604,6 +616,17 @@ fn build_agent_loop(
     let cron_tool = Arc::new(CronTool::new(cron_service.clone()));
     tools.register(Box::new(ArcToolWrapper(cron_tool.clone())));
 
+    // Task manager + task tool
+    let task_store_path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".patina")
+        .join("tasks.json");
+    let task_manager = Arc::new(Mutex::new(TaskManager::load(&task_store_path)));
+    let task_tool = Arc::new(TaskTool::new(task_manager.clone()));
+    task_tool.set_subagent_manager(subagent_manager_for_tasks);
+    task_tool.set_sessions_dir(sessions_dir_for_tasks);
+    tools.register(Box::new(ArcToolWrapper(task_tool.clone())));
+
     // Memory search index
     let db_path = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -619,6 +642,7 @@ fn build_agent_loop(
         message_tool,
         spawn_tool,
         cron_tool,
+        task_tool,
     };
 
     let agent_loop = AgentLoop {
@@ -637,7 +661,7 @@ fn build_agent_loop(
         stream_tx: None,
     };
 
-    Ok((agent_loop, context_tools, cron_service, bus))
+    Ok((agent_loop, context_tools, cron_service, bus, task_manager))
 }
 
 /// Wrapper to register an `Arc<T: Tool>` in the ToolRegistry (which expects `Box<dyn Tool>`).
@@ -663,7 +687,7 @@ impl<T: patina_core::tools::Tool + 'static> patina_core::tools::Tool for ArcTool
 async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result<()> {
     tracing::info!("Starting gateway...");
 
-    let (mut agent_loop, context_tools, cron_service, mut bus) =
+    let (mut agent_loop, context_tools, cron_service, mut bus, task_manager) =
         build_agent_loop(config, workspace)?;
 
     // Load persona store
@@ -674,6 +698,12 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
     let persona_store = Arc::new(tokio::sync::Mutex::new(PersonaStore::load(
         &persona_store_path,
     )));
+
+    // Wire persona store into task tool for auto_execute persona resolution
+    context_tools
+        .task_tool
+        .set_persona_store(persona_store.clone());
+
     // Start cron service
     {
         let mut cron = cron_service.lock().await;
@@ -758,7 +788,8 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
             agent_loop.usage_tracker.clone(),
             config.agents.pricing.clone(),
         ) {
-            Ok(web) => {
+            Ok(mut web) => {
+                web.set_task_manager(task_manager.clone());
                 let web = Arc::new(web);
                 web_channel_ref = Some(web.clone());
                 channel_manager.register(web).await;
@@ -868,6 +899,42 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                     .set_context(&origin_channel, &origin_chat_id)
                     .await;
 
+                // Task completion callback: if subagent result has a task_id,
+                // move the task to Done and add the result as a comment.
+                if let Some(task_id_val) = msg.metadata.get("task_id") {
+                    if let Some(task_id) = task_id_val.as_str() {
+                        let status = msg
+                            .metadata
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("completed");
+                        let mut tm = task_manager.lock().await;
+                        let target_status = if status == "completed" {
+                            patina_core::task::TaskStatus::Done
+                        } else {
+                            patina_core::task::TaskStatus::Todo
+                        };
+                        let target_status_str = target_status.as_str().to_string();
+                        let _ = tm.move_task(task_id, target_status);
+                        let _ = tm.add_comment(
+                            task_id,
+                            "subagent",
+                            &format!("[{status}] {}", msg.content),
+                        );
+                        tracing::info!("Task {task_id} updated to {status} via subagent callback");
+
+                        // Log activity to the task session
+                        let task_session_key = format!("task:{task_id}");
+                        let event = format!("Subagent {status}: task moved to {target_status_str}");
+                        if let Ok(session) =
+                            agent_loop.sessions.get_or_create_checked(&task_session_key)
+                        {
+                            session.add_message("system", &event);
+                            let _ = agent_loop.sessions.save(&task_session_key);
+                        }
+                    }
+                }
+
                 // Prefix content with system sender info
                 let system_content = format!("[System: {}] {}", msg.sender_id, msg.content);
 
@@ -935,6 +1002,83 @@ async fn run_gateway(config: &patina_config::Config, workspace: &Path) -> Result
                         }
                     }
                     None => break,
+                }
+                continue;
+            }
+
+            // Task channel messages: route to task-scoped session with assignee persona.
+            if msg.channel == "task" {
+                let task_id = msg.chat_id.clone();
+                let session_key = format!("task:{task_id}");
+                context_tools.set_context("task", &task_id).await;
+
+                // Resolve persona from task assignee
+                let (preamble_override, persona_tier) = {
+                    let tm = task_manager.lock().await;
+                    if let Some(task) = tm.get(&task_id) {
+                        if let Some(assignee) = &task.assignee {
+                            let store = persona_store.lock().await;
+                            match store.get(assignee) {
+                                Some(p) => (
+                                    if p.preamble.is_empty() {
+                                        None
+                                    } else {
+                                        Some(p.preamble.clone())
+                                    },
+                                    if p.model_tier.is_empty() {
+                                        None
+                                    } else {
+                                        Some(p.model_tier.clone())
+                                    },
+                                ),
+                                None => (None, None),
+                            }
+                        } else {
+                            (None, None)
+                        }
+                    } else {
+                        (None, None)
+                    }
+                };
+
+                let result = agent_loop
+                    .process_message_with_persona(
+                        &session_key,
+                        &msg.content,
+                        None,
+                        preamble_override.as_deref(),
+                        persona_tier.as_deref(),
+                    )
+                    .await;
+
+                match result {
+                    Ok((response, _needs_consolidation)) => {
+                        // Route through "web" channel so WS clients receive the message.
+                        // JS client filters by chatId (the task ID).
+                        if let Err(e) = bus.outbound_tx.send(OutboundMessage {
+                            channel: "web".to_string(),
+                            chat_id: task_id,
+                            content: response,
+                            reply_to: None,
+                            metadata: msg.metadata.clone(),
+                        }) {
+                            tracing::warn!("Failed to publish task response to bus: {e}");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Error processing task message: {e}");
+                        if let Err(send_err) = bus.outbound_tx.send(OutboundMessage {
+                            channel: "web".to_string(),
+                            chat_id: task_id,
+                            content: format!("Error processing task message: {e}"),
+                            reply_to: None,
+                            metadata: HashMap::new(),
+                        }) {
+                            tracing::warn!(
+                                "Failed to publish task error response to bus: {send_err}"
+                            );
+                        }
+                    }
                 }
                 continue;
             }

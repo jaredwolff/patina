@@ -25,6 +25,7 @@
   var sidebarTitle = document.getElementById("sidebar-title");
   var chatAreaEl = document.getElementById("chat-area");
   var usageViewEl = document.getElementById("usage-view");
+  var tasksViewEl = document.getElementById("tasks-view");
   var headerH1 = document.querySelector("#chat-area header h1");
   var chatIdEl = document.getElementById("chat-id");
   var scrollBtn = document.getElementById("scroll-bottom-btn");
@@ -41,6 +42,13 @@
   var streamingDiv = null;
   var streamingText = "";
   var isGenerating = false;
+
+  // Task detail panel state
+  var activeTaskId = null;
+  var taskStreamingDiv = null;
+  var taskStreamingText = "";
+  var origStatus = null;
+  var origAssignee = null;
 
   function loadSessions() {
     // Migrate from old single-session format
@@ -356,20 +364,28 @@
     currentPage = page;
     closePageMenu();
 
+    chatAreaEl.classList.add("hidden");
+    usageViewEl.classList.add("hidden");
+    tasksViewEl.classList.add("hidden");
+
     if (page === "chats") {
       chatAreaEl.classList.remove("hidden");
-      usageViewEl.classList.add("hidden");
       sidebarTitle.textContent = "Chats";
       sessionListEl.style.display = "";
       newChatBtn.style.display = "";
     } else if (page === "usage") {
-      chatAreaEl.classList.add("hidden");
       usageViewEl.classList.remove("hidden");
       sidebarTitle.textContent = "Usage";
       sessionListEl.style.display = "none";
       newChatBtn.style.display = "none";
       loadUsageFilters();
       refreshUsage();
+    } else if (page === "tasks") {
+      tasksViewEl.classList.remove("hidden");
+      sidebarTitle.textContent = "Tasks";
+      sessionListEl.style.display = "none";
+      newChatBtn.style.display = "none";
+      loadTaskBoard();
     }
 
     // Update active state on dropdown items
@@ -579,7 +595,24 @@
           }
           break;
         case "text_delta":
-          if (data.chatId === activeChatId && data.content) {
+          if (data.chatId === activeTaskId && data.content) {
+            // Streaming into the task detail panel
+            var taskMsgsEl2 = document.getElementById("task-messages");
+            // Remove thinking/empty indicators
+            var thinkEl = taskMsgsEl2.querySelector(".task-thinking");
+            if (thinkEl) thinkEl.remove();
+            var emptyEl = taskMsgsEl2.querySelector(".task-messages-empty");
+            if (emptyEl) emptyEl.remove();
+            if (!taskStreamingDiv) {
+              taskStreamingDiv = document.createElement("div");
+              taskStreamingDiv.className = "message assistant";
+              taskMsgsEl2.appendChild(taskStreamingDiv);
+              taskStreamingText = "";
+            }
+            taskStreamingText += data.content;
+            taskStreamingDiv.innerHTML = renderMarkdown(taskStreamingText);
+            taskMsgsEl2.scrollTop = taskMsgsEl2.scrollHeight;
+          } else if (data.chatId === activeChatId && data.content) {
             removeThinking();
             if (!streamingDiv) {
               streamingDiv = document.createElement("div");
@@ -593,6 +626,17 @@
           }
           break;
         case "message":
+          if (data.chatId === activeTaskId) {
+            // Final message for task detail panel
+            if (taskStreamingDiv) {
+              taskStreamingDiv.innerHTML = renderMarkdown(data.content);
+              taskStreamingDiv = null;
+              taskStreamingText = "";
+            } else {
+              addTaskMessage("assistant", data.content);
+            }
+            break;
+          }
           setGenerating(false);
           if (data.chatId === activeChatId) {
             if (streamingDiv) {
@@ -611,7 +655,9 @@
           }
           break;
         case "user_message":
-          if (data.chatId === activeChatId) {
+          if (data.chatId === activeTaskId) {
+            addTaskMessage("user", data.content);
+          } else if (data.chatId === activeChatId) {
             addMessage("user", data.content);
           }
           if (data.chatId) {
@@ -624,7 +670,19 @@
           }
           break;
         case "thinking":
-          if (data.chatId === activeChatId) {
+          if (data.chatId === activeTaskId) {
+            // Show thinking indicator in task panel
+            var taskMsgsEl3 = document.getElementById("task-messages");
+            var emptyEl2 = taskMsgsEl3.querySelector(".task-messages-empty");
+            if (emptyEl2) emptyEl2.remove();
+            if (!taskMsgsEl3.querySelector(".task-thinking")) {
+              var thinkDiv = document.createElement("div");
+              thinkDiv.className = "message system task-thinking";
+              thinkDiv.textContent = "Thinking...";
+              taskMsgsEl3.appendChild(thinkDiv);
+              taskMsgsEl3.scrollTop = taskMsgsEl3.scrollHeight;
+            }
+          } else if (data.chatId === activeChatId) {
             showThinking();
           }
           break;
@@ -659,6 +717,20 @@
               }
             } else {
               renderSidebar();
+            }
+          }
+          break;
+        case "task_history":
+          if (data.chatId === activeTaskId && data.messages) {
+            var taskMsgsEl = document.getElementById("task-messages");
+            taskMsgsEl.innerHTML = "";
+            if (data.messages.length === 0) {
+              taskMsgsEl.innerHTML =
+                '<div class="task-messages-empty">No messages yet. Start a conversation about this task.</div>';
+            } else {
+              data.messages.forEach(function (msg) {
+                addTaskMessage(msg.role, msg.content);
+              });
             }
           }
           break;
@@ -1467,4 +1539,572 @@
     if (str.endsWith("K")) return parseFloat(str) * 1000;
     return parseFloat(str) || 0;
   }
+
+  // === Tasks / Kanban Board ===
+
+  var taskEditorEl = document.getElementById("task-editor");
+  var taskEditorForm = document.getElementById("task-editor-form");
+  var teId = document.getElementById("te-id");
+  var teTitle = document.getElementById("te-title");
+  var teDescription = document.getElementById("te-description");
+  var tePriority = document.getElementById("te-priority");
+  var teAssignee = document.getElementById("te-assignee");
+  var teTags = document.getElementById("te-tags");
+  var teDeleteBtn = document.getElementById("te-delete");
+  var teCancelBtn = document.getElementById("te-cancel");
+  var taskAddBtn = document.getElementById("task-add-btn");
+  var taskEditorTitle = document.getElementById("task-editor-title");
+  var allTasks = [];
+
+  // Tasks sidebar toggle
+  document
+    .getElementById("tasks-sidebar-toggle")
+    .addEventListener("click", function () {
+      if (appEl.classList.contains("sidebar-hidden")) {
+        openSidebarMobile();
+      } else {
+        appEl.classList.add("sidebar-hidden");
+        removeOverlay();
+      }
+    });
+
+  function loadTaskBoard() {
+    fetch("/api/tasks")
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (tasks) {
+        allTasks = tasks;
+        renderBoard(tasks);
+      })
+      .catch(function (e) {
+        console.error("Failed to load tasks:", e);
+      });
+  }
+
+  function renderBoard(tasks) {
+    var columns = { backlog: [], todo: [], in_progress: [], done: [] };
+    tasks.forEach(function (t) {
+      var col = columns[t.status];
+      if (col) col.push(t);
+    });
+
+    ["backlog", "todo", "in_progress", "done"].forEach(function (status) {
+      var container = document.querySelector(
+        '.kanban-cards[data-status="' + status + '"]',
+      );
+      var countEl = document.getElementById("count-" + status);
+      if (countEl) countEl.textContent = columns[status].length;
+      container.innerHTML = "";
+
+      // Sort by priority: urgent > high > medium > low
+      var priorityOrder = { urgent: 0, high: 1, medium: 2, low: 3 };
+      columns[status].sort(function (a, b) {
+        return (
+          (priorityOrder[a.priority] || 3) - (priorityOrder[b.priority] || 3)
+        );
+      });
+
+      columns[status].forEach(function (task) {
+        var card = document.createElement("div");
+        card.className = "kanban-card";
+        card.setAttribute("draggable", "true");
+        card.setAttribute("data-task-id", task.id);
+
+        var titleRow = document.createElement("div");
+        titleRow.className = "kanban-card-title";
+
+        var dot = document.createElement("span");
+        dot.className = "priority-dot " + (task.priority || "medium");
+        titleRow.appendChild(dot);
+
+        var titleText = document.createTextNode(task.title);
+        titleRow.appendChild(titleText);
+        card.appendChild(titleRow);
+
+        var meta = document.createElement("div");
+        meta.className = "kanban-card-meta";
+
+        if (task.assignee) {
+          var avatar = document.createElement("span");
+          avatar.className = "kanban-card-assignee";
+          avatar.textContent = task.assignee.charAt(0);
+          avatar.title = task.assignee;
+          if (cachedPersonas) {
+            for (var pi = 0; pi < cachedPersonas.length; pi++) {
+              if (
+                cachedPersonas[pi].key === task.assignee &&
+                cachedPersonas[pi].color
+              ) {
+                avatar.style.background = cachedPersonas[pi].color;
+                break;
+              }
+            }
+          }
+          meta.appendChild(avatar);
+        }
+
+        if (task.tags && task.tags.length) {
+          task.tags.forEach(function (tag) {
+            var tagEl = document.createElement("span");
+            tagEl.className = "kanban-card-tag";
+            tagEl.textContent = tag;
+            meta.appendChild(tagEl);
+          });
+        }
+
+        if (meta.children.length) card.appendChild(meta);
+
+        // Click to open detail panel
+        card.addEventListener("click", function () {
+          openTaskDetail(task);
+        });
+
+        // Drag events
+        card.addEventListener("dragstart", function (e) {
+          e.dataTransfer.setData("text/plain", task.id);
+          card.classList.add("dragging");
+        });
+        card.addEventListener("dragend", function () {
+          card.classList.remove("dragging");
+        });
+
+        container.appendChild(card);
+      });
+    });
+  }
+
+  // Drag-and-drop on columns
+  document.querySelectorAll(".kanban-cards").forEach(function (col) {
+    col.addEventListener("dragover", function (e) {
+      e.preventDefault();
+      col.classList.add("drag-over");
+    });
+    col.addEventListener("dragleave", function () {
+      col.classList.remove("drag-over");
+    });
+    col.addEventListener("drop", function (e) {
+      e.preventDefault();
+      col.classList.remove("drag-over");
+      var taskId = e.dataTransfer.getData("text/plain");
+      var newStatus = col.getAttribute("data-status");
+      if (!taskId || !newStatus) return;
+
+      fetch("/api/tasks/" + taskId + "/move", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      })
+        .then(function () {
+          loadTaskBoard();
+        })
+        .catch(function (err) {
+          console.error("Move failed:", err);
+        });
+    });
+  });
+
+  // New task button
+  taskAddBtn.addEventListener("click", function () {
+    openTaskEditor(null);
+  });
+
+  function openTaskEditor(task) {
+    // Populate assignee dropdown with personas
+    fetch("/api/personas")
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (personas) {
+        teAssignee.innerHTML = '<option value="">Unassigned</option>';
+        personas.forEach(function (p) {
+          var opt = document.createElement("option");
+          opt.value = p.key;
+          opt.textContent = p.name;
+          teAssignee.appendChild(opt);
+        });
+
+        if (task) {
+          // Edit existing
+          taskEditorTitle.textContent = "Edit Task";
+          teId.value = task.id;
+          teTitle.value = task.title;
+          teDescription.value = task.description || "";
+          tePriority.value = task.priority || "medium";
+          teAssignee.value = task.assignee || "";
+          teTags.value = (task.tags || []).join(", ");
+          teDeleteBtn.style.display = "";
+        } else {
+          // New task
+          taskEditorTitle.textContent = "New Task";
+          teId.value = "";
+          teTitle.value = "";
+          teDescription.value = "";
+          tePriority.value = "medium";
+          teAssignee.value = "";
+          teTags.value = "";
+          teDeleteBtn.style.display = "none";
+        }
+
+        taskEditorEl.classList.remove("hidden");
+      });
+  }
+
+  teCancelBtn.addEventListener("click", function () {
+    taskEditorEl.classList.add("hidden");
+  });
+
+  taskEditorEl.addEventListener("click", function (e) {
+    if (e.target === taskEditorEl) {
+      taskEditorEl.classList.add("hidden");
+    }
+  });
+
+  teDeleteBtn.addEventListener("click", function () {
+    var id = teId.value;
+    if (!id) return;
+    if (!confirm("Delete this task?")) return;
+
+    fetch("/api/tasks/" + id, { method: "DELETE" })
+      .then(function () {
+        taskEditorEl.classList.add("hidden");
+        loadTaskBoard();
+      })
+      .catch(function (err) {
+        console.error("Delete failed:", err);
+      });
+  });
+
+  taskEditorForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var id = teId.value;
+    var tags = teTags.value
+      .split(",")
+      .map(function (s) {
+        return s.trim();
+      })
+      .filter(function (s) {
+        return s.length > 0;
+      });
+
+    if (id) {
+      // Update existing
+      fetch("/api/tasks/" + id, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: teTitle.value,
+          description: teDescription.value,
+          priority: tePriority.value,
+          tags: tags,
+        }),
+      })
+        .then(function () {
+          // Also update assignee if changed
+          var task = allTasks.find(function (t) {
+            return t.id === id;
+          });
+          var newAssignee = teAssignee.value || null;
+          var oldAssignee = (task && task.assignee) || null;
+          if (newAssignee !== oldAssignee) {
+            return fetch("/api/tasks/" + id + "/assign", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ assignee: newAssignee }),
+            });
+          }
+        })
+        .then(function () {
+          taskEditorEl.classList.add("hidden");
+          loadTaskBoard();
+        })
+        .catch(function (err) {
+          console.error("Update failed:", err);
+        });
+    } else {
+      // Create new
+      fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: teTitle.value,
+          description: teDescription.value,
+          priority: tePriority.value,
+          assignee: teAssignee.value || null,
+          tags: tags,
+        }),
+      })
+        .then(function () {
+          taskEditorEl.classList.add("hidden");
+          loadTaskBoard();
+        })
+        .catch(function (err) {
+          console.error("Create failed:", err);
+        });
+    }
+  });
+
+  // === Task Detail Panel ===
+
+  var taskDetailEl = document.getElementById("task-detail");
+  var tdTitle = document.getElementById("td-title");
+  var tdId = document.getElementById("td-id");
+  var tdStatus = document.getElementById("td-status");
+  var tdPriority = document.getElementById("td-priority");
+  var tdAssignee = document.getElementById("td-assignee");
+  var tdTags = document.getElementById("td-tags");
+  var tdDescription = document.getElementById("td-description");
+  var tdDescriptionEdit = document.getElementById("td-description-edit");
+  var tdCloseBtn = document.getElementById("td-close");
+  var tdDeleteBtn = document.getElementById("td-delete");
+  var taskInputForm = document.getElementById("task-input-form");
+  var taskInput = document.getElementById("task-input");
+  var taskMessagesEl = document.getElementById("task-messages");
+
+  function addTaskMessage(role, content) {
+    // Remove empty placeholder if present
+    var emptyEl = taskMessagesEl.querySelector(".task-messages-empty");
+    if (emptyEl) emptyEl.remove();
+
+    var div = document.createElement("div");
+    div.className = "message " + role;
+    if (role === "user" || role === "system") {
+      div.textContent = content;
+    } else {
+      div.innerHTML = renderMarkdown(content);
+    }
+    taskMessagesEl.appendChild(div);
+    taskMessagesEl.scrollTop = taskMessagesEl.scrollHeight;
+  }
+
+  function openTaskDetail(task) {
+    activeTaskId = task.id;
+    taskStreamingDiv = null;
+    taskStreamingText = "";
+
+    // Populate metadata fields
+    tdTitle.value = task.title;
+    tdId.textContent = "#" + task.id;
+    tdStatus.value = task.status || "todo";
+    tdPriority.value = task.priority || "medium";
+    tdTags.value = (task.tags || []).join(", ");
+
+    tdDescriptionEdit.value = task.description || "";
+    if (task.description) {
+      tdDescription.innerHTML = renderMarkdown(task.description);
+    } else {
+      tdDescription.innerHTML =
+        '<span class="task-detail-description-placeholder">Click to add a description...</span>';
+    }
+    tdDescription.style.display = "";
+    tdDescriptionEdit.style.display = "none";
+
+    // Populate assignee dropdown with personas
+    fetch("/api/personas")
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (personas) {
+        tdAssignee.innerHTML = '<option value="">Unassigned</option>';
+        personas.forEach(function (p) {
+          var opt = document.createElement("option");
+          opt.value = p.key;
+          opt.textContent = p.name;
+          tdAssignee.appendChild(opt);
+        });
+        tdAssignee.value = task.assignee || "";
+        origStatus = tdStatus.value;
+        origAssignee = tdAssignee.value;
+      });
+
+    // Clear messages and request history
+    taskMessagesEl.innerHTML =
+      '<div class="task-messages-empty">Loading...</div>';
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "get_task_history", chatId: task.id }));
+    }
+
+    taskDetailEl.classList.remove("hidden");
+    taskInput.focus();
+  }
+
+  function saveTaskMeta() {
+    if (!activeTaskId) return;
+    var tags = tdTags.value
+      .split(",")
+      .map(function (s) {
+        return s.trim();
+      })
+      .filter(function (s) {
+        return s.length > 0;
+      });
+
+    var promises = [];
+
+    // Always save core fields (title, description, priority, tags)
+    promises.push(
+      fetch("/api/tasks/" + activeTaskId, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: tdTitle.value,
+          description: tdDescriptionEdit.value,
+          priority: tdPriority.value,
+          tags: tags,
+        }),
+      }),
+    );
+
+    // Only call /move if status actually changed
+    if (tdStatus.value !== origStatus) {
+      promises.push(
+        fetch("/api/tasks/" + activeTaskId + "/move", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: tdStatus.value }),
+        }).then(function () {
+          origStatus = tdStatus.value;
+        }),
+      );
+    }
+
+    // Only call /assign if assignee actually changed
+    if (tdAssignee.value !== origAssignee) {
+      promises.push(
+        fetch("/api/tasks/" + activeTaskId + "/assign", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ assignee: tdAssignee.value || null }),
+        }).then(function () {
+          origAssignee = tdAssignee.value;
+        }),
+      );
+    }
+
+    Promise.all(promises)
+      .then(function () {
+        var task = allTasks.find(function (t) {
+          return t.id === activeTaskId;
+        });
+        if (task) {
+          task.title = tdTitle.value;
+          task.priority = tdPriority.value;
+          task.status = tdStatus.value;
+          task.assignee = tdAssignee.value || null;
+          task.tags = tags;
+        }
+      })
+      .catch(function (err) {
+        console.error("Failed to save task metadata:", err);
+      });
+  }
+
+  function closeTaskDetail() {
+    saveTaskMeta();
+    taskDetailEl.classList.add("hidden");
+    activeTaskId = null;
+    taskStreamingDiv = null;
+    taskStreamingText = "";
+    loadTaskBoard();
+  }
+
+  tdCloseBtn.addEventListener("click", closeTaskDetail);
+
+  tdId.addEventListener("click", function () {
+    if (activeTaskId) {
+      var sessionKey = "task:" + activeTaskId;
+      var ta = document.createElement("textarea");
+      ta.value = sessionKey;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      var prev = tdId.textContent;
+      tdId.textContent = "copied!";
+      setTimeout(function () {
+        tdId.textContent = prev;
+      }, 1000);
+    }
+  });
+
+  taskDetailEl.addEventListener("click", function (e) {
+    if (e.target === taskDetailEl) {
+      closeTaskDetail();
+    }
+  });
+
+  // Auto-save on change
+  tdStatus.addEventListener("change", saveTaskMeta);
+  tdPriority.addEventListener("change", saveTaskMeta);
+  tdAssignee.addEventListener("change", saveTaskMeta);
+  tdTags.addEventListener("change", saveTaskMeta);
+  tdTitle.addEventListener("change", saveTaskMeta);
+
+  // Click-to-edit description
+  tdDescription.addEventListener("click", function () {
+    tdDescription.style.display = "none";
+    tdDescriptionEdit.style.display = "";
+    tdDescriptionEdit.focus();
+  });
+
+  tdDescriptionEdit.addEventListener("blur", function () {
+    saveTaskMeta();
+    var val = tdDescriptionEdit.value;
+    if (val) {
+      tdDescription.innerHTML = renderMarkdown(val);
+    } else {
+      tdDescription.innerHTML =
+        '<span class="task-detail-description-placeholder">Click to add a description...</span>';
+    }
+    tdDescriptionEdit.style.display = "none";
+    tdDescription.style.display = "";
+  });
+
+  // Delete task from detail panel
+  tdDeleteBtn.addEventListener("click", function () {
+    if (!activeTaskId) return;
+    if (!confirm("Delete this task?")) return;
+    fetch("/api/tasks/" + activeTaskId, { method: "DELETE" })
+      .then(function () {
+        closeTaskDetail();
+      })
+      .catch(function (err) {
+        console.error("Delete failed:", err);
+      });
+  });
+
+  // Send task message
+  taskInputForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var text = taskInput.value.trim();
+    if (!text || !activeTaskId) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    addTaskMessage("user", text);
+    taskInput.value = "";
+
+    ws.send(
+      JSON.stringify({
+        type: "task_message",
+        chatId: activeTaskId,
+        content: text,
+      }),
+    );
+  });
+
+  // Auto-resize task input
+  taskInput.addEventListener("input", function () {
+    this.style.height = "auto";
+    this.style.height = Math.min(this.scrollHeight, 120) + "px";
+  });
+
+  // Enter to send (shift+enter for newline)
+  taskInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      taskInputForm.dispatchEvent(new Event("submit"));
+    }
+  });
 })();

@@ -302,7 +302,7 @@ impl AgentLoop {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| {
-                if session_key.starts_with("subagent:") {
+                if session_key.starts_with("subagent:") || session_key.starts_with("task:") {
                     session_key.to_string()
                 } else {
                     "default".to_string()

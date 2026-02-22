@@ -64,6 +64,34 @@ impl SubagentManager {
         origin_channel: &str,
         origin_chat_id: &str,
     ) -> Result<String> {
+        self.spawn_with_persona(
+            task,
+            label,
+            origin_channel,
+            origin_chat_id,
+            None,
+            None,
+            HashMap::new(),
+        )
+        .await
+    }
+
+    /// Spawn a background agent with optional persona preamble and model tier.
+    ///
+    /// When `preamble` is provided, the subagent uses that persona's system prompt
+    /// instead of the generic worker prompt. When `model_tier` is provided, the
+    /// subagent's LLM calls use that tier. Extra metadata (e.g. `task_id`) is
+    /// forwarded in the completion message for downstream handling.
+    pub async fn spawn_with_persona(
+        &self,
+        task: &str,
+        label: &str,
+        origin_channel: &str,
+        origin_chat_id: &str,
+        preamble: Option<&str>,
+        model_tier: Option<&str>,
+        extra_metadata: HashMap<String, serde_json::Value>,
+    ) -> Result<String> {
         let task_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
         let label_str = if label.is_empty() {
             format!("subagent-{task_id}")
@@ -73,8 +101,8 @@ impl SubagentManager {
 
         info!("Spawning subagent {task_id} ({label_str}): {task}");
 
-        // Build isolated agent loop with restricted tools
-        let agent_loop = self.build_subagent_loop(&task_id)?;
+        // Build isolated agent loop with persona-aware prompt
+        let agent_loop = self.build_subagent_loop_with_persona(&task_id, preamble)?;
 
         let task_owned = task.to_string();
         let label_owned = label_str.clone();
@@ -83,11 +111,26 @@ impl SubagentManager {
         let origin_chat_id = origin_chat_id.to_string();
         let inbound_tx = self.inbound_tx.clone();
         let running = self.running.clone();
+        let preamble_owned = preamble.map(|s| s.to_string());
+        let model_tier_owned = model_tier.map(|s| s.to_string());
 
         let handle = tokio::spawn(async move {
-            let session_key = format!("subagent:{task_id_owned}");
+            // Task-origin subagents write to the task session (unified timeline).
+            // All others get their own isolated session.
+            let session_key = if origin_channel == "task" {
+                format!("task:{origin_chat_id}")
+            } else {
+                format!("subagent:{task_id_owned}")
+            };
 
-            let result = Self::run_subagent(agent_loop, &session_key, &task_owned).await;
+            let result = Self::run_subagent_with_persona(
+                agent_loop,
+                &session_key,
+                &task_owned,
+                preamble_owned.as_deref(),
+                model_tier_owned.as_deref(),
+            )
+            .await;
 
             // Format result announcement
             let announcement = match &result {
@@ -116,7 +159,7 @@ impl SubagentManager {
                 media: Vec::new(),
                 timestamp: crate::bus::default_timestamp(),
                 metadata: {
-                    let mut m = HashMap::new();
+                    let mut m = extra_metadata;
                     m.insert(
                         "subagent_id".to_string(),
                         serde_json::Value::String(task_id_owned.clone()),
@@ -172,25 +215,41 @@ impl SubagentManager {
         }
     }
 
-    fn build_subagent_loop(&self, _task_id: &str) -> Result<AgentLoop> {
+    fn build_subagent_loop_with_persona(
+        &self,
+        _task_id: &str,
+        preamble: Option<&str>,
+    ) -> Result<AgentLoop> {
         let sessions_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".patina")
             .join("sessions");
         let sessions = SessionManager::new(sessions_dir);
 
-        // Subagent gets a task-focused system prompt
-        let subagent_prompt = format!(
-            "You are a focused background worker agent (subagent). \
-             Your workspace is: {}\n\n\
-             IMPORTANT RULES:\n\
-             - Stay focused ONLY on your assigned task\n\
-             - Do NOT start conversations or ask questions\n\
-             - Do NOT work on anything besides your task\n\
-             - Be concise but thorough in your work\n\
-             - When done, provide a clear summary of what you accomplished",
-            self.workspace.display()
-        );
+        // If a persona preamble is provided, use it with task-focus rules appended.
+        // Otherwise fall back to the generic worker prompt.
+        let subagent_prompt = if let Some(persona_preamble) = preamble {
+            format!(
+                "{persona_preamble}\n\n\
+                 You are working as a background agent on a specific task.\n\
+                 Your workspace is: {}\n\
+                 Stay focused ONLY on your assigned task.\n\
+                 When done, provide a clear summary of what you accomplished.",
+                self.workspace.display()
+            )
+        } else {
+            format!(
+                "You are a focused background worker agent (subagent). \
+                 Your workspace is: {}\n\n\
+                 IMPORTANT RULES:\n\
+                 - Stay focused ONLY on your assigned task\n\
+                 - Do NOT start conversations or ask questions\n\
+                 - Do NOT work on anything besides your task\n\
+                 - Be concise but thorough in your work\n\
+                 - When done, provide a clear summary of what you accomplished",
+                self.workspace.display()
+            )
+        };
 
         let context = ContextBuilder::with_preamble(&self.workspace, subagent_prompt);
 
@@ -239,12 +298,16 @@ impl SubagentManager {
         })
     }
 
-    async fn run_subagent(
+    async fn run_subagent_with_persona(
         mut agent_loop: AgentLoop,
         session_key: &str,
         task: &str,
+        preamble_override: Option<&str>,
+        model_tier: Option<&str>,
     ) -> Result<String> {
-        let (response, _) = agent_loop.process_message(session_key, task, None).await?;
+        let (response, _) = agent_loop
+            .process_message_with_persona(session_key, task, None, preamble_override, model_tier)
+            .await?;
         Ok(response)
     }
 }

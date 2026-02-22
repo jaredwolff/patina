@@ -4,6 +4,7 @@ pub mod memory_search;
 pub mod message;
 pub mod shell;
 pub mod spawn;
+pub mod task;
 pub mod web;
 
 use std::collections::HashMap;

@@ -22,6 +22,9 @@
                             >
                                 Chats
                             </button>
+                            <button class="dropdown-item" data-page="tasks">
+                                Tasks
+                            </button>
                             <button class="dropdown-item" data-page="usage">
                                 Usage
                             </button>
@@ -186,6 +189,222 @@
                             </thead>
                             <tbody></tbody>
                         </table>
+                    </div>
+                </div>
+            </div>
+            <!-- Tasks Kanban Board (shown when page=tasks) -->
+            <div id="tasks-view" class="page-view hidden">
+                <header>
+                    <button
+                        id="tasks-sidebar-toggle"
+                        class="sidebar-toggle-btn"
+                        title="Toggle sidebar"
+                    >
+                        &#9776;
+                    </button>
+                    <h1>Tasks</h1>
+                    <button id="task-add-btn" class="btn-primary">
+                        + New Task
+                    </button>
+                </header>
+                <div id="kanban-board">
+                    <div class="kanban-column" data-status="backlog">
+                        <div class="kanban-column-header">
+                            <span class="kanban-column-title">Backlog</span
+                            ><span class="kanban-count" id="count-backlog"
+                                >0</span
+                            >
+                        </div>
+                        <div class="kanban-cards" data-status="backlog"></div>
+                    </div>
+                    <div class="kanban-column" data-status="todo">
+                        <div class="kanban-column-header">
+                            <span class="kanban-column-title">Todo</span
+                            ><span class="kanban-count" id="count-todo">0</span>
+                        </div>
+                        <div class="kanban-cards" data-status="todo"></div>
+                    </div>
+                    <div class="kanban-column" data-status="in_progress">
+                        <div class="kanban-column-header">
+                            <span class="kanban-column-title">In Progress</span
+                            ><span class="kanban-count" id="count-in_progress"
+                                >0</span
+                            >
+                        </div>
+                        <div
+                            class="kanban-cards"
+                            data-status="in_progress"
+                        ></div>
+                    </div>
+                    <div class="kanban-column" data-status="done">
+                        <div class="kanban-column-header">
+                            <span class="kanban-column-title">Done</span
+                            ><span class="kanban-count" id="count-done">0</span>
+                        </div>
+                        <div class="kanban-cards" data-status="done"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Task Editor Modal (for new tasks only) -->
+        <div id="task-editor" class="modal hidden">
+            <div class="modal-content modal-wide">
+                <h3 id="task-editor-title">New Task</h3>
+                <form id="task-editor-form">
+                    <input type="hidden" id="te-id" />
+                    <label
+                        >Title
+                        <input
+                            type="text"
+                            id="te-title"
+                            required
+                            placeholder="Task title"
+                        />
+                    </label>
+                    <label
+                        >Description
+                        <textarea
+                            id="te-description"
+                            rows="3"
+                            placeholder="Markdown description..."
+                        ></textarea>
+                    </label>
+                    <label
+                        >Priority
+                        <select id="te-priority">
+                            <option value="low">Low</option>
+                            <option value="medium" selected>Medium</option>
+                            <option value="high">High</option>
+                            <option value="urgent">Urgent</option>
+                        </select>
+                    </label>
+                    <label
+                        >Assignee
+                        <select id="te-assignee">
+                            <option value="">Unassigned</option>
+                        </select>
+                    </label>
+                    <label
+                        >Tags (comma-separated)
+                        <input
+                            type="text"
+                            id="te-tags"
+                            placeholder="e.g. bug, frontend"
+                        />
+                    </label>
+                    <div class="modal-actions">
+                        <button
+                            type="button"
+                            id="te-delete"
+                            class="btn-danger"
+                            style="display: none; margin-right: auto"
+                        >
+                            Delete
+                        </button>
+                        <button
+                            type="button"
+                            id="te-cancel"
+                            class="btn-secondary"
+                            style="width: auto"
+                        >
+                            Cancel
+                        </button>
+                        <button type="submit" class="btn-primary">Save</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Task Detail Panel (full-screen overlay for viewing/editing a task + chat) -->
+        <div id="task-detail" class="modal hidden">
+            <div class="modal-content task-detail-content">
+                <div class="task-detail-header">
+                    <input
+                        type="text"
+                        id="td-title"
+                        class="task-detail-title-input"
+                        placeholder="Task title"
+                    />
+                    <span id="td-id" class="task-detail-id"></span>
+                    <button
+                        id="td-delete"
+                        class="btn-danger btn-sm"
+                        title="Delete task"
+                    >
+                        Delete
+                    </button>
+                    <button id="td-close" class="btn-text" title="Close">
+                        &times;
+                    </button>
+                </div>
+                <div class="task-detail-body">
+                    <div class="task-detail-left">
+                        <div class="task-detail-meta">
+                            <label
+                                >Status
+                                <select id="td-status">
+                                    <option value="backlog">Backlog</option>
+                                    <option value="todo">Todo</option>
+                                    <option value="in_progress">
+                                        In Progress
+                                    </option>
+                                    <option value="done">Done</option>
+                                </select>
+                            </label>
+                            <label
+                                >Priority
+                                <select id="td-priority">
+                                    <option value="low">Low</option>
+                                    <option value="medium">Medium</option>
+                                    <option value="high">High</option>
+                                    <option value="urgent">Urgent</option>
+                                </select>
+                            </label>
+                            <label
+                                >Assignee
+                                <select id="td-assignee">
+                                    <option value="">Unassigned</option>
+                                </select>
+                            </label>
+                            <label
+                                >Tags
+                                <input
+                                    type="text"
+                                    id="td-tags"
+                                    placeholder="comma-separated"
+                                />
+                            </label>
+                        </div>
+                        <div class="task-detail-section-label">Description</div>
+                        <div
+                            id="td-description"
+                            class="task-detail-description"
+                            title="Click to edit"
+                        >
+                            <span class="task-detail-description-placeholder"
+                                >Click to add a description...</span
+                            >
+                        </div>
+                        <textarea
+                            id="td-description-edit"
+                            class="task-detail-description-edit"
+                            style="display: none"
+                            placeholder="Description (markdown supported)..."
+                        ></textarea>
+                    </div>
+                    <div class="task-detail-right">
+                        <div id="task-messages" class="task-messages"></div>
+                        <form id="task-input-form" class="task-input-form">
+                            <textarea
+                                id="task-input"
+                                placeholder="Discuss this task..."
+                                rows="1"
+                            ></textarea>
+                            <button type="submit" id="task-send-btn">
+                                Send
+                            </button>
+                        </form>
                     </div>
                 </div>
             </div>
