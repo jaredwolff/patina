@@ -1,6 +1,6 @@
 import { useState } from "preact/hooks";
 import { route } from "./router";
-import { Sidebar } from "./components/Sidebar";
+import { Header } from "./components/Header";
 import { ChatView } from "./components/ChatView";
 import { UsageView } from "./components/UsageView";
 import { TasksView } from "./components/TasksView";
@@ -10,14 +10,16 @@ import { PersonaEditor } from "./components/PersonaEditor";
 import {
   activeChatId,
   sessions,
+  getSessionPersona,
   clearUnread,
   removeSession,
   generateUUID,
   addSession,
 } from "./state/sessions";
-import { personas } from "./state/personas";
+import { personas, getPersona } from "./state/personas";
 import { clearMessages } from "./state/messages";
 import { send } from "./state/websocket";
+import { taskEditorOpen } from "./state/tasks";
 import type { Persona } from "./types";
 
 function closeSidebarMobile(setSidebarHidden: (v: boolean) => void) {
@@ -89,6 +91,78 @@ export function App() {
     setEditorOpen(true);
   }
 
+  function handleCopyChatId() {
+    const chatId = activeChatId.value;
+    if (!chatId) return;
+    const sessionKey = "web:" + chatId;
+    navigator.clipboard.writeText(sessionKey).catch(() => {
+      const ta = document.createElement("textarea");
+      ta.value = sessionKey;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    });
+  }
+
+  function renderHeaderActions() {
+    switch (currentRoute) {
+      case "chats": {
+        const chatId = activeChatId.value;
+        const personaKey = chatId ? getSessionPersona(chatId) : null;
+        const persona = personaKey ? getPersona(personaKey) : null;
+        return (
+          <>
+            {persona && (
+              <span class="persona-badge">
+                <span
+                  class="header-avatar"
+                  style={{ background: persona.color || "#888" }}
+                >
+                  {persona.name?.charAt(0) || "P"}
+                </span>
+                <span>{persona.name || persona.key}</span>
+              </span>
+            )}
+            {chatId && (
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontFamily: "monospace",
+                  color: "var(--text-secondary)",
+                  opacity: 0.5,
+                  cursor: "pointer",
+                  userSelect: "none",
+                }}
+                title="Click to copy session key"
+                onClick={handleCopyChatId}
+              >
+                {chatId.slice(0, 8)}
+              </span>
+            )}
+          </>
+        );
+      }
+      case "tasks":
+        return (
+          <button
+            class="btn-primary btn-sm"
+            onClick={() => {
+              taskEditorOpen.value = true;
+            }}
+          >
+            + New Task
+          </button>
+        );
+      default:
+        return null;
+    }
+  }
+
+  const showSidebarToggle = currentRoute === "chats";
+
   function renderView() {
     switch (currentRoute) {
       case "tasks":
@@ -100,7 +174,10 @@ export function App() {
         return (
           <ChatView
             sidebarHidden={sidebarHidden}
-            onToggleSidebar={() => setSidebarHidden(!sidebarHidden)}
+            onNewChat={handleNewChat}
+            onSwitchChat={handleSwitchChat}
+            onDeleteChat={handleDeleteChat}
+            onManagePersonas={() => setManagerOpen(true)}
           />
         );
     }
@@ -108,15 +185,13 @@ export function App() {
 
   return (
     <>
-      <Sidebar
-        onNewChat={handleNewChat}
-        onSwitchChat={handleSwitchChat}
-        onDeleteChat={handleDeleteChat}
-        onManagePersonas={() => setManagerOpen(true)}
-        sidebarHidden={sidebarHidden}
+      <Header
         onToggleSidebar={() => setSidebarHidden(!sidebarHidden)}
-      />
-      {renderView()}
+        showSidebarToggle={showSidebarToggle}
+      >
+        {renderHeaderActions()}
+      </Header>
+      <div class="mainArea">{renderView()}</div>
       <PersonaPicker
         visible={pickerOpen}
         personas={personas.value}

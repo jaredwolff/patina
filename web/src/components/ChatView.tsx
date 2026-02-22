@@ -5,28 +5,34 @@ import {
   updateSessionTitle,
   updateSessionTime,
 } from "../state/sessions";
-import { connectionStatus, statusText, send } from "../state/websocket";
+import { send } from "../state/websocket";
 import {
   addMessage,
   isGenerating,
   showThinking as showThinkingSignal,
 } from "../state/messages";
-import { getPersona } from "../state/personas";
+import { Sidebar } from "./Sidebar";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 import css from "./ChatView.module.css";
 
-export interface ChatViewProps {
+interface ChatViewProps {
   sidebarHidden: boolean;
-  onToggleSidebar: () => void;
+  onNewChat: () => void;
+  onSwitchChat: (id: string) => void;
+  onDeleteChat: (id: string) => void;
+  onManagePersonas: () => void;
 }
 
-export function ChatView({ sidebarHidden, onToggleSidebar }: ChatViewProps) {
+export function ChatView({
+  sidebarHidden,
+  onNewChat,
+  onSwitchChat,
+  onDeleteChat,
+  onManagePersonas,
+}: ChatViewProps) {
   const chatId = activeChatId.value;
-  const status = connectionStatus.value;
-  const statusLabel = statusText.value;
   const personaKey = chatId ? getSessionPersona(chatId) : null;
-  const persona = personaKey ? getPersona(personaKey) : null;
 
   function handleCancel() {
     if (chatId) {
@@ -67,21 +73,6 @@ export function ChatView({ sidebarHidden, onToggleSidebar }: ChatViewProps) {
     isGenerating.value = true;
   }
 
-  function handleCopyChatId() {
-    if (!chatId) return;
-    const sessionKey = "web:" + chatId;
-    navigator.clipboard.writeText(sessionKey).catch(() => {
-      const ta = document.createElement("textarea");
-      ta.value = sessionKey;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-    });
-  }
-
   function handleMessagesScroll(e: Event) {
     const el = e.target as HTMLElement;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
@@ -90,59 +81,33 @@ export function ChatView({ sidebarHidden, onToggleSidebar }: ChatViewProps) {
   }
 
   function scrollToBottom() {
-    // Find the messages container (MessageList's root div)
     const el = document.querySelector<HTMLElement>("[data-messages]");
     if (el) el.scrollTop = el.scrollHeight;
   }
 
   return (
     <div class={css.chatArea}>
-      <header class={css.header}>
-        {sidebarHidden && (
+      <div class={css.chatBody}>
+        <Sidebar
+          onNewChat={onNewChat}
+          onSwitchChat={onSwitchChat}
+          onDeleteChat={onDeleteChat}
+          onManagePersonas={onManagePersonas}
+          sidebarHidden={sidebarHidden}
+        />
+        <div class={css.chatMain}>
+          <MessageList onScroll={handleMessagesScroll} />
           <button
-            class={css.sidebarToggle}
-            title="Toggle sidebar"
-            onClick={onToggleSidebar}
-            style={{ display: "block" }}
+            id="scroll-bottom-btn"
+            class={`${css.scrollBtn} hidden`}
+            title="Scroll to bottom"
+            onClick={scrollToBottom}
           >
-            &#9776;
+            &#x2193;
           </button>
-        )}
-        <h1>
-          Patina
-          {persona && (
-            <span class="persona-badge">
-              <span
-                class="header-avatar"
-                style={{ background: persona.color || "#888" }}
-              >
-                {persona.name?.charAt(0) || "P"}
-              </span>
-              <span>{persona.name || persona.key}</span>
-            </span>
-          )}
-        </h1>
-        <span class={`status ${status}`}>{statusLabel}</span>
-        {chatId && (
-          <span
-            class={css.chatId}
-            title="Click to copy session key"
-            onClick={handleCopyChatId}
-          >
-            {chatId.slice(0, 8)}
-          </span>
-        )}
-      </header>
-      <MessageList onScroll={handleMessagesScroll} />
-      <button
-        id="scroll-bottom-btn"
-        class={`${css.scrollBtn} hidden`}
-        title="Scroll to bottom"
-        onClick={scrollToBottom}
-      >
-        &#x2193;
-      </button>
-      <ChatInput onSend={handleSend} onCancel={handleCancel} />
+          <ChatInput onSend={handleSend} onCancel={handleCancel} />
+        </div>
+      </div>
     </div>
   );
 }

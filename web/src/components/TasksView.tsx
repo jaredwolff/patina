@@ -1,5 +1,5 @@
 import { useState, useEffect } from "preact/hooks";
-import { tasks, loadTasks } from "../state/tasks";
+import { tasks, taskEditorOpen, loadTasks } from "../state/tasks";
 import { personas } from "../state/personas";
 import { TaskEditor } from "./TaskEditor";
 import { TaskDetail } from "./TaskDetail";
@@ -37,11 +37,11 @@ function priorityClass(p: string): string {
 }
 
 export function TasksView() {
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [editingTask] = useState<Task | null>(null);
   const [detailTask, setDetailTask] = useState<Task | null>(null);
   const [dragOverStatus, setDragOverStatus] = useState<string | null>(null);
 
+  const editorOpen = taskEditorOpen.value;
   const taskList = tasks.value;
   const personaList = personas.value;
 
@@ -83,18 +83,6 @@ export function TasksView() {
 
   return (
     <div class={css.view}>
-      <header class={css.header}>
-        <h1>Tasks</h1>
-        <button
-          class="btn-primary"
-          onClick={() => {
-            setEditingTask(null);
-            setEditorOpen(true);
-          }}
-        >
-          + New Task
-        </button>
-      </header>
       <div class={css.board}>
         {STATUSES.map(({ key, label }) => (
           <div key={key} class={css.column}>
@@ -158,7 +146,9 @@ export function TasksView() {
       <TaskEditor
         visible={editorOpen}
         task={editingTask}
-        onClose={() => setEditorOpen(false)}
+        onClose={() => {
+          taskEditorOpen.value = false;
+        }}
       />
       {detailTask && (
         <TaskDetail task={detailTask} onClose={() => setDetailTask(null)} />

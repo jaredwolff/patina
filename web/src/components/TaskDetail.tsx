@@ -24,7 +24,9 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
   const [priority, setPriority] = useState(task.priority);
   const [assignee, setAssignee] = useState(task.assignee || "");
   const [tags, setTags] = useState((task.tags || []).join(", "));
-  const [descriptionText, setDescriptionText] = useState(task.description || "");
+  const [descriptionText, setDescriptionText] = useState(
+    task.description || "",
+  );
   const [editingDesc, setEditingDesc] = useState(false);
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -58,25 +60,40 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
   }, [msgs, streaming]);
 
   async function saveMeta() {
-    const tagList = tags.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+    const tagList = tags
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
     const promises: Promise<void>[] = [];
 
-    promises.push(api.updateTask(task.id, {
-      title,
-      description: descriptionText,
-      priority,
-      tags: tagList,
-    }));
+    promises.push(
+      api.updateTask(task.id, {
+        title,
+        description: descriptionText,
+        priority,
+        tags: tagList,
+      }),
+    );
 
     if (status !== origStatus.current) {
-      promises.push(api.moveTask(task.id, status).then(() => { origStatus.current = status; }));
+      promises.push(
+        api.moveTask(task.id, status).then(() => {
+          origStatus.current = status;
+        }),
+      );
     }
 
     if (assignee !== origAssignee.current) {
-      promises.push(api.assignTask(task.id, assignee || null).then(() => { origAssignee.current = assignee; }));
+      promises.push(
+        api.assignTask(task.id, assignee || null).then(() => {
+          origAssignee.current = assignee;
+        }),
+      );
     }
 
-    await Promise.all(promises).catch((err) => console.error("Save failed:", err));
+    await Promise.all(promises).catch((err) =>
+      console.error("Save failed:", err),
+    );
   }
 
   function handleClose() {
@@ -100,7 +117,10 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
     const text = el.value.trim();
     if (!text) return;
 
-    taskMessages.value = [...taskMessages.value, { role: "user", content: text }];
+    taskMessages.value = [
+      ...taskMessages.value,
+      { role: "user", content: text },
+    ];
     el.value = "";
 
     send({ type: "task_message", chatId: task.id, content: text });
@@ -112,8 +132,13 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
   }
 
   return (
-    <div class="modal" onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}>
-      <div class={`modal-content ${css.detailContent}`}>
+    <div
+      class="modal"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) handleClose();
+      }}
+    >
+      <div class={css.detailContent}>
         <div class={css.detailHeader}>
           <input
             type="text"
@@ -123,16 +148,34 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
             onInput={(e) => setTitle((e.target as HTMLInputElement).value)}
             onChange={() => saveMeta()}
           />
-          <span class={css.detailId} onClick={handleCopyId}>#{task.id}</span>
-          <button class="btn-danger btn-sm" title="Delete task" onClick={handleDelete}>Delete</button>
-          <button class="btn-text" title="Close" onClick={handleClose}>&times;</button>
+          <span class={css.detailId} onClick={handleCopyId}>
+            #{task.id}
+          </span>
+          <button
+            class="btn-danger btn-sm"
+            title="Delete task"
+            onClick={handleDelete}
+          >
+            Delete
+          </button>
+          <button class="btn-text" title="Close" onClick={handleClose}>
+            &times;
+          </button>
         </div>
         <div class={css.detailBody}>
           <div class={css.detailLeft}>
             <div class={css.detailMeta}>
               <label>
                 Status
-                <select value={status} onChange={(e) => { setStatus((e.target as HTMLSelectElement).value as Task["status"]); saveMeta(); }}>
+                <select
+                  value={status}
+                  onChange={(e) => {
+                    setStatus(
+                      (e.target as HTMLSelectElement).value as Task["status"],
+                    );
+                    saveMeta();
+                  }}
+                >
                   <option value="backlog">Backlog</option>
                   <option value="todo">Todo</option>
                   <option value="in_progress">In Progress</option>
@@ -141,7 +184,15 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
               </label>
               <label>
                 Priority
-                <select value={priority} onChange={(e) => { setPriority((e.target as HTMLSelectElement).value as Task["priority"]); saveMeta(); }}>
+                <select
+                  value={priority}
+                  onChange={(e) => {
+                    setPriority(
+                      (e.target as HTMLSelectElement).value as Task["priority"],
+                    );
+                    saveMeta();
+                  }}
+                >
                   <option value="low">Low</option>
                   <option value="medium">Medium</option>
                   <option value="high">High</option>
@@ -150,9 +201,19 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
               </label>
               <label>
                 Assignee
-                <select value={assignee} onChange={(e) => { setAssignee((e.target as HTMLSelectElement).value); saveMeta(); }}>
+                <select
+                  value={assignee}
+                  onChange={(e) => {
+                    setAssignee((e.target as HTMLSelectElement).value);
+                    saveMeta();
+                  }}
+                >
                   <option value="">Unassigned</option>
-                  {personaList.map((p) => <option key={p.key} value={p.key}>{p.name}</option>)}
+                  {personaList.map((p) => (
+                    <option key={p.key} value={p.key}>
+                      {p.name}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label>
@@ -172,8 +233,13 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                 class={css.descriptionEdit}
                 placeholder="Description (markdown supported)..."
                 value={descriptionText}
-                onInput={(e) => setDescriptionText((e.target as HTMLTextAreaElement).value)}
-                onBlur={() => { setEditingDesc(false); saveMeta(); }}
+                onInput={(e) =>
+                  setDescriptionText((e.target as HTMLTextAreaElement).value)
+                }
+                onBlur={() => {
+                  setEditingDesc(false);
+                  saveMeta();
+                }}
                 autoFocus
               />
             ) : (
@@ -183,7 +249,9 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                 dangerouslySetInnerHTML={{
                   __html: descriptionText
                     ? renderMarkdown(descriptionText)
-                    : '<span class="' + css.descriptionPlaceholder + '">Click to add a description...</span>',
+                    : '<span class="' +
+                      css.descriptionPlaceholder +
+                      '">Click to add a description...</span>',
                 }}
               />
             )}
@@ -191,19 +259,30 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
           <div class={css.detailRight}>
             <div class={css.taskMessages} ref={messagesRef}>
               {msgs.length === 0 && !isStreamActive && (
-                <div class={css.taskMessagesEmpty}>No messages yet. Start a conversation about this task.</div>
+                <div class={css.taskMessagesEmpty}>
+                  No messages yet. Start a conversation about this task.
+                </div>
               )}
               {msgs.map((msg, i) => (
                 <div key={i} class={`message ${msg.role}`}>
                   {msg.role === "assistant" ? (
-                    <span dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+                    <span
+                      dangerouslySetInnerHTML={{
+                        __html: renderMarkdown(msg.content),
+                      }}
+                    />
                   ) : (
                     msg.content
                   )}
                 </div>
               ))}
               {isStreamActive && streaming && (
-                <div class="message assistant" dangerouslySetInnerHTML={{ __html: renderMarkdown(streaming) }} />
+                <div
+                  class="message assistant"
+                  dangerouslySetInnerHTML={{
+                    __html: renderMarkdown(streaming),
+                  }}
+                />
               )}
             </div>
             <form class={css.taskInputForm} onSubmit={handleSendMessage}>

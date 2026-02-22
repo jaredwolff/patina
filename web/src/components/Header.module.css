@@ -1,0 +1,71 @@
+.header {
+    display: flex;
+    align-items: center;
+    height: 48px;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    flex-shrink: 0;
+    gap: 12px;
+}
+
+.hamburger {
+    display: block;
+    background: none;
+    border: none;
+    color: var(--text);
+    font-size: 20px;
+    cursor: pointer;
+    padding: 4px;
+    flex-shrink: 0;
+}
+
+.brand {
+    font-size: 16px;
+    font-weight: 700;
+    flex-shrink: 0;
+    margin-right: 8px;
+}
+
+.nav {
+    display: flex;
+    gap: 2px;
+    flex: 1;
+}
+
+.navTab {
+    padding: 6px 14px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    transition:
+        color 0.15s,
+        border-color 0.15s;
+}
+
+.navTab:hover {
+    color: var(--text);
+}
+
+.navTabActive {
+    composes: navTab;
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+
+.actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+@media (max-width: 768px) {
+    .brand {
+        display: none;
+    }
+}

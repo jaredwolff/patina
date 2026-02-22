@@ -45,9 +45,6 @@ export function UsageView() {
 
   return (
     <div class={css.view}>
-      <header class={css.header}>
-        <h1>Usage</h1>
-      </header>
       <div class={css.content}>
         <div class={css.filters}>
           <label>
