@@ -1,0 +1,45 @@
+.form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.form label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.form input,
+.form textarea,
+.form select {
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 14px;
+    outline: none;
+}
+
+.form input:focus,
+.form textarea:focus,
+.form select:focus {
+    border-color: var(--accent);
+}
+
+.form textarea {
+    resize: vertical;
+    min-height: 80px;
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+    font-size: 13px;
+}
+
+.labelWithAction {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}

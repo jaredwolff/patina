@@ -1,0 +1,177 @@
+.sidebar {
+    width: 260px;
+    flex-shrink: 0;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    overflow: hidden;
+}
+
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.titleWrap {
+    position: relative;
+}
+
+.menuBtn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    color: inherit;
+}
+
+.menuBtn h2 {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.chevron {
+    font-size: 10px;
+    color: var(--text-secondary);
+    transition: transform 0.15s;
+}
+
+.menuBtn:hover .chevron {
+    color: var(--text);
+}
+
+.actions {
+    display: flex;
+    gap: 4px;
+}
+
+.iconBtn {
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text-secondary);
+    font-size: 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.iconBtn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text);
+}
+
+.newChatBtn {
+    composes: iconBtn;
+    color: var(--text);
+    font-size: 18px;
+}
+
+.sessionList {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+}
+
+.sessionItem {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    margin-bottom: 2px;
+    overflow: hidden;
+    position: relative;
+}
+
+.sessionItem:hover {
+    background: var(--sidebar-hover);
+}
+
+.sessionItem.active {
+    background: var(--sidebar-active);
+}
+
+.avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.content {
+    flex: 1;
+    min-width: 0;
+}
+
+.title {
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.unreadDot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+}
+
+.time {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+.deleteBtn {
+    display: none;
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    line-height: 1;
+}
+
+.deleteBtn:hover {
+    color: var(--status-disconnected);
+    border-color: var(--status-disconnected);
+}
+
+.sessionItem:hover .deleteBtn {
+    display: flex;
+}

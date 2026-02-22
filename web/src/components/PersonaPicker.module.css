@@ -1,0 +1,35 @@
+.list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.card {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+
+.card:hover {
+    border-color: var(--accent);
+}
+
+.name {
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+.tier {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+    font-style: italic;
+}

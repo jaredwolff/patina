@@ -140,7 +140,7 @@ patina-bot/
 │   ├── patina-channels/    # Channel adapters (Web, Telegram, Slack)
 │   ├── patina-cli/         # CLI binary (agent + serve commands)
 │   └── patina-transcribe/  # Voice transcription (Parakeet TDT + Groq)
-└── web/                    # Web UI (HTML/CSS/JS)
+└── web/                    # Web UI (Preact + TypeScript, built with Vite/Bun)
 ```
 
 ### Message Flow
@@ -198,10 +198,13 @@ User Input (CLI / Web UI / Telegram / Slack)
 ### Web UI Features
 
 - Multi-chat sidebar with session management
+- Hash-based routing (`/#/chats`, `/#/tasks`, `/#/usage`) — page survives refresh
 - Agent personas (per-chat, UI-managed, model tiers)
 - LLM response streaming (real-time text display)
 - Cancel/stop generation (button + ESC key)
 - Usage dashboard with cost estimates
+- Task kanban board with drag-and-drop
+- Task detail overlay with chat thread
 - Multi-client sync (WebSocket)
 - Chat ID display for usage cross-reference
 - Scroll-to-bottom button for long threads
@@ -334,6 +337,12 @@ cargo build              # Build all crates
 cargo build --release    # Build optimized
 cargo test               # Run tests
 RUST_LOG=debug cargo run --bin patina -- agent  # Run with logging
+
+# Build web UI (required after changing web/src/*)
+cd web && bun install && bun run build
+
+# Dev mode (Vite dev server with HMR, proxies API/WS to backend)
+cd web && bun run dev
 ```
 
 ---
@@ -342,9 +351,9 @@ RUST_LOG=debug cargo run --bin patina -- agent  # Run with logging
 
 ### Web UI
 
-Built-in web interface served by the gateway on the configured port (default: 18790).
+Built with Preact + TypeScript + Vite (Bun as runtime). The build produces a single `index.html` with all JS/CSS inlined, embedded into the Rust binary via `include_str!()`. `web/dist/index.html` is committed to git so `cargo build` works without Bun installed.
 
-Features: multi-chat, personas, streaming responses, cancel generation, usage dashboard, multi-client sync.
+Features: multi-chat, personas, streaming responses, cancel generation, usage dashboard, task kanban, hash routing (refresh-safe), multi-client sync.
 
 Start with `patina serve` and open `http://localhost:18790`.
 

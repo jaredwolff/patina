@@ -8,7 +8,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Path as AxumPath, Query, State, WebSocketUpgrade};
-use axum::http::header;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::Router;
@@ -155,9 +154,6 @@ impl Channel for WebChannel {
 
         let router = Router::new()
             .route("/", get(serve_index))
-            .route("/style.css", get(serve_css))
-            .route("/app.js", get(serve_js))
-            .route("/marked.min.js", get(serve_marked_js))
             .route("/ws", get(ws_upgrade))
             .route("/api/sessions", get(api_list_sessions))
             .route(
@@ -297,24 +293,6 @@ impl WebChannel {
 
 async fn serve_index() -> Html<&'static str> {
     Html(web_assets::INDEX_HTML)
-}
-
-async fn serve_css() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/css")], web_assets::STYLE_CSS)
-}
-
-async fn serve_js() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "application/javascript")],
-        web_assets::APP_JS,
-    )
-}
-
-async fn serve_marked_js() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "application/javascript")],
-        web_assets::MARKED_JS,
-    )
 }
 
 async fn api_list_sessions(State(state): State<AppState>) -> impl IntoResponse {

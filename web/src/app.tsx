@@ -1,0 +1,146 @@
+import { useState } from "preact/hooks";
+import { route } from "./router";
+import { Sidebar } from "./components/Sidebar";
+import { ChatView } from "./components/ChatView";
+import { UsageView } from "./components/UsageView";
+import { TasksView } from "./components/TasksView";
+import { PersonaPicker } from "./components/PersonaPicker";
+import { PersonaManager } from "./components/PersonaManager";
+import { PersonaEditor } from "./components/PersonaEditor";
+import {
+  activeChatId,
+  sessions,
+  clearUnread,
+  removeSession,
+  generateUUID,
+  addSession,
+} from "./state/sessions";
+import { personas } from "./state/personas";
+import { clearMessages } from "./state/messages";
+import { send } from "./state/websocket";
+import type { Persona } from "./types";
+
+function closeSidebarMobile(setSidebarHidden: (v: boolean) => void) {
+  if (window.innerWidth <= 768) {
+    setSidebarHidden(true);
+  }
+}
+
+export function App() {
+  const [sidebarHidden, setSidebarHidden] = useState(window.innerWidth <= 768);
+  const [managerOpen, setManagerOpen] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingPersona, setEditingPersona] = useState<Persona | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const currentRoute = route.value;
+
+  function finishCreateChat(personaKey: string | null) {
+    const id = generateUUID();
+    addSession({
+      id,
+      title: "New Chat",
+      updatedAt: new Date().toISOString(),
+      persona: personaKey,
+    });
+    send({ type: "create_session", chatId: id, content: personaKey || "" });
+    activeChatId.value = id;
+    clearMessages();
+    closeSidebarMobile(setSidebarHidden);
+  }
+
+  function handleNewChat() {
+    const personaList = personas.value;
+    if (personaList.length > 0) {
+      setPickerOpen(true);
+    } else {
+      finishCreateChat(null);
+    }
+  }
+
+  function handleSwitchChat(id: string) {
+    activeChatId.value = id;
+    clearUnread(id);
+    clearMessages();
+    send({ type: "get_history", chatId: id });
+    closeSidebarMobile(setSidebarHidden);
+  }
+
+  function handleDeleteChat(id: string) {
+    fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }).catch(() => {});
+    send({ type: "delete_session", chatId: id });
+    removeSession(id);
+
+    if (id === activeChatId.value) {
+      if (sessions.value.length > 0) {
+        handleSwitchChat(sessions.value[0].id);
+      } else {
+        activeChatId.value = null;
+        clearMessages();
+        handleNewChat();
+      }
+    }
+  }
+
+  function handleEditPersona(persona: Persona | null) {
+    setEditingPersona(persona);
+    setEditorOpen(true);
+  }
+
+  function renderView() {
+    switch (currentRoute) {
+      case "tasks":
+        return <TasksView />;
+      case "usage":
+        return <UsageView />;
+      case "chats":
+      default:
+        return (
+          <ChatView
+            sidebarHidden={sidebarHidden}
+            onToggleSidebar={() => setSidebarHidden(!sidebarHidden)}
+          />
+        );
+    }
+  }
+
+  return (
+    <>
+      <Sidebar
+        onNewChat={handleNewChat}
+        onSwitchChat={handleSwitchChat}
+        onDeleteChat={handleDeleteChat}
+        onManagePersonas={() => setManagerOpen(true)}
+        sidebarHidden={sidebarHidden}
+        onToggleSidebar={() => setSidebarHidden(!sidebarHidden)}
+      />
+      {renderView()}
+      <PersonaPicker
+        visible={pickerOpen}
+        personas={personas.value}
+        onSelect={(key) => {
+          setPickerOpen(false);
+          finishCreateChat(key);
+        }}
+        onCancel={() => {
+          setPickerOpen(false);
+          if (sessions.value.length === 0) {
+            finishCreateChat(null);
+          }
+        }}
+      />
+      <PersonaManager
+        visible={managerOpen}
+        onClose={() => setManagerOpen(false)}
+        onEdit={handleEditPersona}
+      />
+      <PersonaEditor
+        visible={editorOpen}
+        persona={editingPersona}
+        onClose={() => setEditorOpen(false)}
+      />
+    </>
+  );
+}

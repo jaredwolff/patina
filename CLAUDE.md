@@ -45,6 +45,8 @@ This is a Cargo workspace with 5 crates:
 - **patina-cli**: Main binary with CLI and gateway modes
 - **patina-transcribe**: Voice transcription (local Parakeet TDT + Groq fallback)
 
+The `web/` directory contains the Preact + TypeScript frontend, built with Vite and Bun. Build output (`web/dist/index.html`) is a single HTML file with all JS/CSS inlined, committed to git so `cargo build` works without Bun installed. Embedded into the Rust binary via `include_str!()` in `web_assets.rs`.
+
 ## Build and Test Commands
 
 ```bash
@@ -68,6 +70,15 @@ cargo run --bin patina-cli -- serve
 
 # Specify custom config
 cargo run --bin patina-cli -- -c /path/to/config.json agent
+
+# Build web UI (after changing web/src/*)
+cd web && bun install && bun run build
+
+# Web dev mode (Vite HMR, proxies to backend at :8080)
+cd web && bun run dev
+
+# TypeScript type check
+cd web && npx tsc --noEmit
 ```
 
 ## Communication Style
@@ -215,7 +226,7 @@ Uses `tracing` with env filter (default: info level). Set `RUST_LOG=debug` for v
 
 The `serve` command (implemented in `patina-cli/src/main.rs` via `run_gateway()`) starts the full gateway:
 1. Initializes `ChannelManager` and registers enabled channels (Web, Telegram, Slack)
-2. Starts Web UI (axum HTTP server + WebSocket) with streaming forwarder
+2. Starts Web UI (axum HTTP server + WebSocket) — serves single `index.html` with inlined Preact app, streaming forwarder
 3. Starts Telegram long polling (with Parakeet transcription) if enabled
 4. Starts Slack Socket Mode if enabled
 5. Starts cron service and heartbeat (if enabled)
@@ -224,6 +235,28 @@ The `serve` command (implemented in `patina-cli/src/main.rs` via `run_gateway()`
 8. Handles `/new`, `/help`, `/start` slash commands
 9. Dispatches outbound messages to appropriate channels
 10. Graceful shutdown on Ctrl-C
+
+### Web UI Frontend (web/)
+
+The web UI uses Preact + @preact/signals + TypeScript, bundled by Vite with `vite-plugin-singlefile` to produce a single `index.html`. Bun is the JS runtime.
+
+- **Routing**: Hash-based (`/#/chats`, `/#/tasks`, `/#/usage`) via custom router in `web/src/router.ts` using a Preact signal + `hashchange` listener. No router library.
+- **State**: Module-level Preact signal singletons — no context providers. One store file per domain in `web/src/state/` (sessions, messages, websocket, personas, tasks, usage).
+- **Styling**: CSS Modules for component-scoped styles, global CSS in `web/src/styles/` for theme variables, reset, and shared classes.
+- **Serving**: `web_assets.rs` has `include_str!("../../../web/dist/index.html")`. `web.rs` serves it at `GET /` — no separate CSS/JS routes. The Preact app handles all routing client-side.
+
+```
+web/src/
+├── main.tsx          # entry point
+├── app.tsx           # shell: sidebar + routed view
+├── router.ts         # hash router (signal + hashchange)
+├── types.ts          # shared TypeScript interfaces
+├── api.ts            # typed REST fetch wrappers
+├── state/            # Preact signal stores (sessions, messages, websocket, personas, tasks, usage)
+├── components/       # UI components (ChatView, Sidebar, UsageView, TasksView, Persona*, Modal, etc.)
+├── styles/           # global.css (theme vars, reset), markdown.css
+└── lib/              # markdown.ts (marked configuration)
+```
 
 ## Implementation Status
 
@@ -248,6 +281,7 @@ Implemented:
 - ✅ Cron service
 - ✅ Heartbeat
 - ✅ Web UI channel (multi-chat, personas, streaming, usage dashboard, cancel/interrupt)
+- ✅ Web UI Preact migration (Preact + TypeScript + Vite/Bun, hash routing, CSS Modules)
 - ✅ Telegram channel (teloxide, voice transcription, media handling)
 - ✅ Slack channel (Socket Mode, thread support, allowlist)
 - ✅ Voice transcription (local Parakeet TDT + Groq fallback)
