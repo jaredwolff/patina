@@ -1,18 +1,29 @@
 import { signal } from "@preact/signals";
 
-export type Route = "chats" | "tasks" | "usage";
+export type RouteName = "chats" | "tasks" | "usage";
 
-const validRoutes: Route[] = ["chats", "tasks", "usage"];
-
-function parseHash(): Route {
-  const hash = window.location.hash.replace(/^#\/?/, "");
-  return validRoutes.includes(hash as Route) ? (hash as Route) : "chats";
+export interface ParsedRoute {
+  name: RouteName;
+  param: string | null;
 }
 
-export const route = signal<Route>(parseHash());
+const validRoutes: RouteName[] = ["chats", "tasks", "usage"];
 
-export function navigate(to: Route) {
-  window.location.hash = `/${to}`;
+function parseHash(): ParsedRoute {
+  const raw = window.location.hash.replace(/^#\/?/, "");
+  const [first, ...rest] = raw.split("/");
+  const name = validRoutes.includes(first as RouteName)
+    ? (first as RouteName)
+    : "chats";
+  const param = rest.join("/") || null;
+  return { name, param };
+}
+
+export const route = signal<ParsedRoute>(parseHash());
+
+export function navigate(name: RouteName, param?: string | null) {
+  const hash = param ? `/${name}/${param}` : `/${name}`;
+  window.location.hash = hash;
 }
 
 window.addEventListener("hashchange", () => {

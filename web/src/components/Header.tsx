@@ -1,9 +1,9 @@
 import type { ComponentChildren } from "preact";
-import { route, navigate, type Route } from "../router";
+import { route, navigate, type RouteName } from "../router";
 import { connectionStatus, statusText } from "../state/websocket";
 import css from "./Header.module.css";
 
-const tabs: { key: Route; label: string }[] = [
+const tabs: { key: RouteName; label: string }[] = [
   { key: "chats", label: "Chats" },
   { key: "tasks", label: "Tasks" },
   { key: "usage", label: "Usage" },
@@ -20,7 +20,7 @@ export function Header({
   showSidebarToggle,
   children,
 }: HeaderProps) {
-  const currentRoute = route.value;
+  const currentRoute = route.value.name;
   const status = connectionStatus.value;
   const statusLabel = statusText.value;
 

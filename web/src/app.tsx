@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import { route } from "./router";
+import { route, navigate } from "./router";
 import { Header } from "./components/Header";
 import { ChatView } from "./components/ChatView";
 import { UsageView } from "./components/UsageView";
@@ -35,7 +35,8 @@ export function App() {
   const [editingPersona, setEditingPersona] = useState<Persona | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
 
-  const currentRoute = route.value;
+  const currentRoute = route.value.name;
+  const routeParam = route.value.param;
 
   function finishCreateChat(personaKey: string | null) {
     const id = generateUUID();
@@ -48,6 +49,7 @@ export function App() {
     send({ type: "create_session", chatId: id, content: personaKey || "" });
     activeChatId.value = id;
     clearMessages();
+    navigate("chats", id);
     closeSidebarMobile(setSidebarHidden);
   }
 
@@ -65,6 +67,7 @@ export function App() {
     clearUnread(id);
     clearMessages();
     send({ type: "get_history", chatId: id });
+    navigate("chats", id);
     closeSidebarMobile(setSidebarHidden);
   }
 
@@ -166,7 +169,7 @@ export function App() {
   function renderView() {
     switch (currentRoute) {
       case "tasks":
-        return <TasksView />;
+        return <TasksView initialTaskId={routeParam} />;
       case "usage":
         return <UsageView />;
       case "chats":

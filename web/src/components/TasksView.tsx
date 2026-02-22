@@ -1,6 +1,7 @@
 import { useState, useEffect } from "preact/hooks";
 import { tasks, taskEditorOpen, loadTasks } from "../state/tasks";
 import { personas } from "../state/personas";
+import { navigate } from "../router";
 import { TaskEditor } from "./TaskEditor";
 import { TaskDetail } from "./TaskDetail";
 import * as api from "../api";
@@ -36,7 +37,11 @@ function priorityClass(p: string): string {
   }
 }
 
-export function TasksView() {
+interface TasksViewProps {
+  initialTaskId?: string | null;
+}
+
+export function TasksView({ initialTaskId }: TasksViewProps) {
   const [editingTask] = useState<Task | null>(null);
   const [detailTask, setDetailTask] = useState<Task | null>(null);
   const [dragOverStatus, setDragOverStatus] = useState<string | null>(null);
@@ -48,6 +53,14 @@ export function TasksView() {
   useEffect(() => {
     loadTasks();
   }, []);
+
+  // Open task detail from URL param
+  useEffect(() => {
+    if (initialTaskId && taskList.length > 0) {
+      const t = taskList.find((t) => t.id === initialTaskId);
+      if (t) setDetailTask(t);
+    }
+  }, [initialTaskId, taskList]);
 
   const columns: Record<string, Task[]> = {
     backlog: [],
@@ -74,6 +87,16 @@ export function TasksView() {
     const taskId = e.dataTransfer?.getData("text/plain");
     if (!taskId || !newStatus) return;
     api.moveTask(taskId, newStatus).then(() => loadTasks());
+  }
+
+  function handleOpenTask(t: Task) {
+    setDetailTask(t);
+    navigate("tasks", t.id);
+  }
+
+  function handleCloseTask() {
+    setDetailTask(null);
+    navigate("tasks");
   }
 
   function getAssigneeColor(assigneeKey: string): string {
@@ -111,7 +134,7 @@ export function TasksView() {
                   onDragEnd={(e) => {
                     (e.target as HTMLElement).classList.remove(css.dragging);
                   }}
-                  onClick={() => setDetailTask(t)}
+                  onClick={() => handleOpenTask(t)}
                 >
                   <div class={css.cardTitle}>
                     <span
@@ -150,9 +173,7 @@ export function TasksView() {
           taskEditorOpen.value = false;
         }}
       />
-      {detailTask && (
-        <TaskDetail task={detailTask} onClose={() => setDetailTask(null)} />
-      )}
+      {detailTask && <TaskDetail task={detailTask} onClose={handleCloseTask} />}
     </div>
   );
 }

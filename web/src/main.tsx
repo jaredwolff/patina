@@ -10,12 +10,16 @@ import {
 } from "./state/sessions";
 import { loadPersonas } from "./state/personas";
 import { connectWs } from "./state/websocket";
+import { route } from "./router";
 
 // Initialize state
 loadSessions();
 syncSessions();
 
-if (sessions.value.length > 0) {
+const initial = route.peek();
+if (initial.name === "chats" && initial.param) {
+  activeChatId.value = initial.param;
+} else if (sessions.value.length > 0) {
   activeChatId.value = sessions.value[0].id;
 }
 
